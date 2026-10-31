@@ -7,13 +7,23 @@ function fleetos_env(): array {
     $env = [];
     $path = dirname(__DIR__) . '/.env';
     if (is_file($path) && is_readable($path)) {
-        foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+        foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $index => $line) {
+            if ($index === 0) $line = preg_replace('/^\xEF\xBB\xBF/', '', $line) ?? $line;
             $line = trim($line);
             if ($line === '' || str_starts_with($line, '#') || !str_contains($line, '=')) continue;
             [$key, $value] = explode('=', $line, 2);
+            $key = trim($key);
+            if (str_starts_with($key, 'export ')) $key = trim(substr($key, 7));
             $value = trim($value);
-            if (strlen($value) >= 2 && (($value[0] === '"' && str_ends_with($value, '"')) || ($value[0] === "'" && str_ends_with($value, "'")))) $value = substr($value, 1, -1);
-            $env[trim($key)] = $value;
+            if (strlen($value) >= 2 && ($value[0] === '"' || $value[0] === "'")) {
+                $quote = $value[0];
+                $end = strrpos($value, $quote);
+                if ($end > 0) {
+                    $tail = trim(substr($value, $end + 1));
+                    if ($tail === '' || str_starts_with($tail, '#')) $value = substr($value, 1, $end - 1);
+                }
+            }
+            $env[$key] = $value;
         }
     }
     return $env;
@@ -24,6 +34,11 @@ function fleetos_value(string $key, string $default = ''): string {
     if (array_key_exists($key, $env)) return (string)$env[$key];
     $value = getenv($key);
     return $value === false ? $default : (string)$value;
+}
+
+function fleetos_dotenv_value(string $key, string $default = ''): string {
+    $env = fleetos_env();
+    return array_key_exists($key, $env) ? (string)$env[$key] : $default;
 }
 
 function fleetos_json(array $data, int $status = 200): never {
@@ -37,12 +52,13 @@ function fleetos_json(array $data, int $status = 200): never {
 function fleetos_db(): PDO {
     static $pdo = null;
     if ($pdo instanceof PDO) return $pdo;
-    $host = fleetos_value('DB_HOST');
-    $port = fleetos_value('DB_PORT', '3306');
-    $name = fleetos_value('DB_NAME');
-    $user = fleetos_value('DB_USER');
-    $pass = fleetos_value('DB_PASSWORD');
-    if ($host === '' || $name === '' || $user === '') fleetos_json(['error' => 'Configurați DB_HOST, DB_NAME, DB_USER și DB_PASSWORD în fișierul .env.'], 503);
+    $host = fleetos_dotenv_value('DB_HOST');
+    $port = fleetos_dotenv_value('DB_PORT', '3306');
+    $name = fleetos_dotenv_value('DB_NAME');
+    $user = fleetos_dotenv_value('DB_USER');
+    $pass = fleetos_dotenv_value('DB_PASSWORD');
+    if ($host === '' || $name === '' || $user === '' || $pass === '') fleetos_json(['error' => 'Lipsește DB_HOST, DB_NAME, DB_USER sau DB_PASSWORD din fișierul .env al aplicației.'], 503);
+    if (!ctype_digit($port) || (int)$port < 1 || (int)$port > 65535) fleetos_json(['error' => 'DB_PORT din fișierul .env trebuie să fie un număr între 1 și 65535.'], 503);
     try {
         $pdo = new PDO("mysql:host={$host};port={$port};dbname={$name};charset=utf8mb4", $user, $pass, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC, PDO::ATTR_EMULATE_PREPARES => false, PDO::ATTR_TIMEOUT => 8]);
     } catch (Throwable $error) {
