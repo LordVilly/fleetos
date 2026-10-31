@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+!.htaccess
+node_modules/
+npm-debug.log*
+*.log
+*.sqlite
+*.sqlite3
+*.db
+storage/
+uploads/
