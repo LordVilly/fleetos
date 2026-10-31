@@ -16,7 +16,7 @@ FleetOS este o aplicație web/PWA. Interfața rulează în browser, iar backendu
 3. Faceți pull al branch-ului `main` în directorul document root al domeniului (`public_html` sau document root-ul `villy.daserdesign.ro`). Fișierele proiectului trebuie să fie direct în document root, astfel încât `index.html` să se deschidă la `/`.
 4. Copiați `.env.example` ca `.env` în același director și înlocuiți valorile exemplu cu datele bazei, utilizatorul și o parolă unică lungă pentru FleetOS. Numele MySQL cPanel au de obicei prefixul contului. Nu încărcați `.env` în GitHub.
 5. Opțional, completați cheia OpenAI și datele WhatsApp Business Cloud. Nu activați funcțiile respective până când integrarea nu este configurată. `WHATSAPP_API_VERSION` trebuie să fie versiunea Graph API activă pentru aplicația Meta.
-6. Deschideți `https://villy.daserdesign.ro`. Verificați autentificarea și apoi **Setări → Sincronizare PC ↔ telefon → Testează conexiunea**. Pentru prima migrare, importați datele local înainte de a porni sincronizarea; consultați secțiunea următoare.
+6. Deschideți `https://villy.daserdesign.ro` și autentificați-vă. După login, FleetOS verifică automat MySQL: dacă baza este goală, browserul inițial care are deja date salvate publică snapshotul; un profil nou nu publică date demo peste baza goală. Dacă serverul are flota, un browser Incognito/profil nou o descarcă automat. Un browser vechi cu date locale nesincronizate cere confirmarea înlocuirii și descarcă mai întâi backupul local. După conectare, modificările sunt sincronizate automat.
 
 `.env` este blocat de `.htaccess`. Înainte de a scrie parole reale, confirmați că `https://villy.daserdesign.ro/.env` nu afișează conținut. Păstrați HTTPS activ permanent.
 
@@ -54,7 +54,7 @@ Deschideți `http://127.0.0.1:4173`. Pentru testarea pe telefon, folosiți un ho
 
 ## Date și backupuri
 
-Datele flotei sunt salvate ca snapshot JSON versionat în MySQL, iar fișierele atașate separat ca BLOB. Sincronizarea oprește salvarea la conflict de versiune, pentru a nu suprascrie tacit modificările altui dispozitiv. Datele offline rămân în localStorage/IndexedDB până la sincronizare. Faceți backup atât din FleetOS, cât și prin instrumentele cPanel înainte de migrări sau actualizări.
+Datele flotei sunt salvate ca snapshot JSON versionat în MySQL, iar fișierele atașate separat ca BLOB. MySQL este sursa centrală. Browserul păstrează doar o copie de lucru/cache pentru interfață și utilizarea temporară offline; după autentificare, datele se sincronizează automat. Sincronizarea oprește salvarea la conflict de versiune, pentru a nu suprascrie tacit modificările altui dispozitiv. Faceți backup atât din FleetOS, cât și prin instrumentele cPanel înainte de migrări sau actualizări.
 
 PWA poate păstra interfața cache-uită offline, dar autentificarea, MySQL, GPT, căutarea web și WhatsApp necesită conexiune. Ștergerea datelor browserului poate elimina copii locale nesincronizate.
 

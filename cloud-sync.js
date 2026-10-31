@@ -4,7 +4,7 @@
   let timer = null;
   let busy = false;
   let paused = false;
-  let lastMessage = 'Datele sunt pe acest dispozitiv.';
+  let lastMessage = 'Se verifică baza de date centrală…';
 
   const escapeHtml = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
   const token = () => window.FleetAuth?.isAuthenticated?.() ? 'session' : '';
@@ -128,6 +128,65 @@
       context.notify(error.message);
     }
   }
+  async function bootstrap() {
+    if (!context || !token() || busy || !navigator.onLine) return;
+    busy = true;
+    try {
+      const remote = await getRemote();
+      const local = context.getState();
+      const localRevision = Number(local.settings?.cloudRevision || 0);
+      if (!remote.state) {
+        if (!context.hasLocalSnapshot?.()) {
+          setStatus('Baza centrală goală · așteaptă dispozitivul cu datele flotei');
+          context.notify('Baza MySQL este goală. Deschideți FleetOS în browserul care conține flota inițială; acesta va publica datele pe server.');
+          return;
+        }
+        const revision = await sendState(local, Number(remote.revision || 0));
+        context.enableCloud(revision);
+        await uploadPendingDocuments();
+        paused = false;
+        setStatus('Baza centrală inițializată', true);
+        context.notify('Datele FleetOS au fost salvate în MySQL. Acest server va fi folosit de dispozitivele conectate.');
+        return;
+      }
+      if (local.settings?.cloudSyncEnabled && localRevision === Number(remote.revision || 0)) {
+        paused = false;
+        setStatus('Conectat la baza centrală', true);
+        return;
+      }
+      if (local.settings?.cloudSyncEnabled) {
+        paused = true;
+        setStatus('Conflict între dispozitive · sincronizare oprită');
+        context.notify('Serverul are modificări mai noi decât acest dispozitiv. Verificați Setări → Sincronizare înainte de a continua.');
+        return;
+      }
+      // A browser with no prior FleetOS save is a first-time device (including Incognito).
+      // Load the central snapshot instead of displaying the local starter/demo state.
+      if (!context.hasLocalSnapshot?.()) {
+        context.applyRemote(remote.state, Number(remote.revision || 0));
+        paused = false;
+        await uploadPendingDocuments();
+        setStatus('Conectat la baza centrală', true);
+        context.notify('Flota a fost încărcată din baza de date centrală.');
+        return;
+      }
+      // The server is authoritative, but retain a downloadable local copy before replacing
+      // a browser that already contains unsynchronized data.
+      if (!confirm('Există date FleetOS salvate în acest browser, iar serverul conține deja flota centrală. Pentru a conecta acest browser, aplicația va face un backup local descărcabil și apoi va încărca datele de pe server. Continuați?')) {
+        paused = true;
+        setStatus('Conectare în așteptare · datele locale au fost păstrate');
+        return;
+      }
+      await context.downloadFullBackup();
+      context.applyRemote(remote.state, Number(remote.revision || 0));
+      paused = false;
+      setStatus('Conectat la baza centrală', true);
+      context.notify('Datele centrale au fost încărcate. Backupul local anterior a fost descărcat înainte de înlocuire.');
+    } catch (error) {
+      setStatus('Conexiune la baza centrală necesită atenție');
+      context.notify('Nu am putut încărca datele centrale: ' + error.message);
+    } finally { busy = false; }
+  }
   async function syncToServer() {
     if (!token()) return context.notify('Conectați-vă mai întâi la serverul FleetOS.');
     try {
@@ -214,9 +273,10 @@
     return `<div class="panel"><div class="section-title"><div><h2>Sincronizare PC ↔ telefon</h2><p class="muted">Datele centrale FleetOS sunt păstrate în MySQL. Folosiți același cont pe dispozitive.</p></div><span id="fleetCloudStatus" class="badge ${enabled ? 'good' : 'warn'}">${escapeHtml(lastMessage)}</span></div><div class="toolbar"><button type="button" onclick="FleetCloud.connect()">Testează conexiunea</button><button type="button" onclick="FleetCloud.syncFromServer()">Încarcă de pe server</button><button type="button" class="primary" onclick="FleetCloud.syncToServer()">Trimite copia locală</button></div><p class="muted">${escapeHtml(current)}. Dacă dispozitivele se modifică simultan, sincronizarea se oprește la conflict pentru a evita suprascrierea silențioasă.</p></div>`;
   }
   function init(value) { context = value; if (context.getState().settings?.cloudSyncEnabled && token()) schedule(); }
-  window.FleetCloud = { init, panelHtml, request, schedule, connect, syncToServer, syncFromServer, downloadDocument, deleteDocument, fullBackup };
+  window.FleetCloud = { init, panelHtml, request, schedule, connect, bootstrap, syncToServer, syncFromServer, downloadDocument, deleteDocument, fullBackup };
   window.FleetCloudReady?.();
   window.addEventListener('online', schedule);
+  window.addEventListener('online', () => { if (token()) bootstrap(); });
   window.setInterval(checkRemoteRevision, 30000);
   window.addEventListener('focus', checkRemoteRevision);
 })();

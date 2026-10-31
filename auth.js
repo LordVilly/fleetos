@@ -22,7 +22,7 @@
         csrf = data.csrf || '';
         window.FleetAuth.authenticated = !!data.authenticated;
         gate.classList.toggle('visible', !window.FleetAuth.authenticated);
-        if (window.FleetAuth.authenticated) addLogout();
+        if (window.FleetAuth.authenticated) { addLogout(); window.FleetCloud?.bootstrap?.(); }
       } catch (error) {
         gate.classList.add('visible');
         const message = gate.querySelector('#fleetLoginMessage');
@@ -42,6 +42,7 @@
         gate.classList.remove('visible');
         form.reset();
         addLogout();
+        window.FleetCloud?.bootstrap?.();
       } catch (error) { message.textContent = error.message; }
     }
   };
