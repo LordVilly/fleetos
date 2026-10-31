@@ -11,26 +11,23 @@ FleetOS este o aplicație web/PWA. Interfața rulează în browser, iar backendu
 
 ## Instalare
 
-1. Creați baza de date și utilizatorul în **cPanel → MySQL Database Wizard**; acordați utilizatorului toate privilegiile asupra bazei.
-2. În phpMyAdmin, selectați baza și importați `database/schema.sql`.
+1. Creați baza de date și utilizatorul în **cPanel → MySQL Database Wizard**.
+2. Acordați utilizatorului MySQL toate privilegiile, inclusiv `CREATE`, `ALTER`, `INDEX`, `SELECT`, `INSERT`, `UPDATE` și `DELETE`. Schema se creează din aplicație la primul click pe butonul de migrare. Importul manual al `database/schema.sql` din phpMyAdmin rămâne disponibil ca alternativă.
 3. Faceți pull al branch-ului `main` în directorul document root al domeniului (`public_html` sau document root-ul `villy.daserdesign.ro`). Fișierele proiectului trebuie să fie direct în document root, astfel încât `index.html` să se deschidă la `/`.
 4. Copiați `.env.example` ca `.env` în același director și înlocuiți valorile exemplu cu datele bazei, utilizatorul și o parolă unică lungă pentru FleetOS. Numele MySQL cPanel au de obicei prefixul contului. Nu încărcați `.env` în GitHub.
 5. Opțional, completați cheia OpenAI și datele WhatsApp Business Cloud. Nu activați funcțiile respective până când integrarea nu este configurată. `WHATSAPP_API_VERSION` trebuie să fie versiunea Graph API activă pentru aplicația Meta.
-6. Deschideți `https://villy.daserdesign.ro` și autentificați-vă. După login, FleetOS verifică automat MySQL: dacă baza este goală, browserul inițial care are deja date salvate publică snapshotul; un profil nou nu publică date demo peste baza goală. Dacă serverul are flota, un browser Incognito/profil nou o descarcă automat. Un browser vechi cu date locale nesincronizate cere confirmare, descarcă backup și adaugă în server numai înregistrările cu ID-uri care lipsesc; dacă același ID există în ambele locuri, serverul rămâne prioritar. După conectare, modificările sunt sincronizate automat.
+6. Deschideți `https://villy.daserdesign.ro`, autentificați-vă și accesați **Setări → Migrare / actualizare bază de date**. Butonul creează tabelele lipsă, aplică fișierele SQL neaplicate din `database/migrations/` și inițializează snapshotul din browser numai dacă baza este goală. Nu șterge și nu înlocuiește un snapshot existent. După migrare, un profil Incognito nou preia automat datele de pe server.
 
 `.env` este blocat de `.htaccess`. Înainte de a scrie parole reale, confirmați că `https://villy.daserdesign.ro/.env` nu afișează conținut. Păstrați HTTPS activ permanent.
 
 ## Migrarea datelor locale
 
-1. În versiunea curentă, generați **Setări → Backup și sincronizare → backup complet** și păstrați fișierul într-un loc privat.
-2. Puneți backupul temporar într-o cale privată pe contul cPanel, în afara document root-ului.
-3. Dacă furnizorul oferă PHP CLI/SSH, rulați din directorul aplicației:
+Pentru a inițializa baza cu flota din browserul curent, autentificați-vă pe dispozitivul care conține datele și apăsați **Setări → Migrare / actualizare bază de date**. Butonul creează schema și stochează snapshotul local numai dacă MySQL nu conține deja unul. Documentele locale atașate sunt încărcate după inițializare.
 
-```bash
-php scripts/import-local-backup.php /home/CPANELUSER/fleetos-backup.json
-```
+Dacă restaurați un backup JSON, importați-l în browser prin **Setări → Importă backup JSON** înainte de migrarea inițială. Pentru backupuri foarte mari sau restaurare administrativă prin CLI, `scripts/import-local-backup.php` rămâne disponibil; el necesită ca schema să existe și refuză să suprascrie datele fără opțiunea explicită `--replace`.
+## Migrații viitoare
 
-Importul se oprește fără modificări dacă baza are deja date. Opțiunea `--replace` suprascrie explicit starea și documentele serverului și trebuie folosită numai după un backup separat. Dacă nu aveți SSH/PHP CLI, configurați mai întâi aplicația și folosiți opțiunea **Trimite copia locală** doar când baza este goală și ați verificat backupul. Nu selectați sincronizarea de pe server înainte de import, deoarece va înlocui datele locale.
+Pentru o schimbare de schemă, adăugați un fișier SQL nou, de exemplu `database/migrations/0002_vehicle_metadata.sql`, apoi publicați versiunea aplicației în cPanel. După deployment, apăsați **Setări → Migrare / actualizare bază de date**. Migrațiile deja aplicate sunt protejate prin checksum și nu trebuie modificate. Actualizarea codului HTML/PHP/JS rămâne un pas separat de deployment; butonul aplică doar migrațiile bazei incluse în versiunea deja instalată.
 
 ## `.env.example`
 

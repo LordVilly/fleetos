@@ -17,6 +17,74 @@ function fleetos_schema(bool $manual = false): array {
 
 function fleetos_length(string $value): int { return function_exists('mb_strlen') ? mb_strlen($value, 'UTF-8') : strlen($value); }
 
+function fleetos_apply_migrations(array $body): never {
+    $state = $body['state'] ?? null;
+    if ($state !== null && (!is_array($state) || !is_array($state['vehicles'] ?? null) || !is_array($state['history'] ?? null) || !is_array($state['orders'] ?? null) || !is_array($state['settings'] ?? null))) {
+        fleetos_json(['error'=>'Snapshotul inițial FleetOS nu are structura necesară.'],400);
+    }
+    $payload = $state === null ? null : json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($payload !== null && (strlen($payload) > 30000000 || $payload === false)) fleetos_json(['error'=>'Snapshotul depășește limita de 30 MB sau nu poate fi serializat.'],413);
+
+    $pdo = fleetos_db();
+    $lockName = 'fleetos_schema_migrations_v1';
+    $locked = false;
+    $applied = [];
+    $response = null;
+    $failure = null;
+    try {
+        $locked = (int)$pdo->query("SELECT GET_LOCK('{$lockName}', 15)")->fetchColumn() === 1;
+        if (!$locked) throw new RuntimeException('Migrarea este deja în curs pe altă cerere. Reîncercați în câteva secunde.');
+        $pdo->exec("CREATE TABLE IF NOT EXISTS fleetos_migrations (version VARCHAR(190) NOT NULL PRIMARY KEY, checksum CHAR(64) NOT NULL, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, applied_by VARCHAR(120) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+        $files = ['0001_initial_schema' => dirname(__DIR__) . '/database/schema.sql'];
+        foreach (glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: [] as $file) {
+            $version = basename($file, '.sql');
+            if (preg_match('/^[0-9]{4}_[a-zA-Z0-9_-]+$/', $version)) $files[$version] = $file;
+        }
+        ksort($files, SORT_STRING);
+        $lookup = $pdo->prepare('SELECT checksum FROM fleetos_migrations WHERE version = ?');
+        $record = $pdo->prepare('INSERT INTO fleetos_migrations (version, checksum, applied_by) VALUES (?, ?, ?)');
+        foreach ($files as $version => $file) {
+            $sql = file_get_contents($file);
+            if ($sql === false) throw new RuntimeException('Nu am putut citi migrarea ' . $version . '.');
+            $sql = str_replace(["\r\n", "\r"], "\n", $sql);
+            $checksum = hash('sha256', $sql);
+            $lookup->execute([$version]);
+            $existing = $lookup->fetchColumn();
+            if ($existing !== false) {
+                if (!hash_equals((string)$existing, $checksum)) throw new RuntimeException('Migrarea aplicată ' . $version . ' a fost modificată. Migrațiile publicate trebuie păstrate nemodificate; creați o migrare nouă.');
+                continue;
+            }
+            $sql = preg_replace('/^\s*--.*$/m', '', $sql) ?? $sql;
+            foreach (explode(';', $sql) as $statement) {
+                $statement = trim($statement);
+                if ($statement !== '') $pdo->exec($statement);
+            }
+            $record->execute([$version, $checksum, (string)($_SESSION['fleetos_user'] ?? 'FleetOS')]);
+            $applied[] = $version;
+        }
+
+        $stateInserted = false;
+        if ($payload !== null) {
+            $pdo->beginTransaction();
+            $insert = $pdo->prepare('INSERT IGNORE INTO fleetos_state (state_id, revision, payload) VALUES (1, 1, ?)');
+            $insert->execute([$payload]);
+            $stateInserted = $insert->rowCount() === 1;
+            $row = $pdo->query('SELECT revision FROM fleetos_state WHERE state_id = 1')->fetch();
+            $pdo->commit();
+        } else $row = $pdo->query('SELECT revision FROM fleetos_state WHERE state_id = 1')->fetch();
+        $response = ['ok'=>true,'applied'=>$applied,'schemaVersion'=>array_key_last($files),'stateInserted'=>$stateInserted,'stateExists'=>(bool)$row,'revision'=>(int)($row['revision']??0),'message'=>$applied ? 'Migrațiile bazei de date au fost aplicate.' : 'Baza de date este deja la zi.'];
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        error_log('FleetOS migration failed: ' . $error->getMessage());
+        $failure = $error instanceof RuntimeException && str_starts_with($error->getMessage(),'Migrarea este deja în curs') ? $error->getMessage() : 'Migrarea bazei a eșuat. Verificați privilegiile CREATE/ALTER ale utilizatorului MySQL și jurnalul PHP al hostingului. Datele existente nu au fost suprascrise.';
+    } finally {
+        if ($locked) { try { $pdo->query("SELECT RELEASE_LOCK('{$lockName}')"); } catch (Throwable $ignored) {} }
+    }
+    if ($failure !== null) fleetos_json(['error'=>$failure],str_starts_with($failure,'Migrarea este deja în curs')?409:500);
+    fleetos_json($response ?? ['error'=>'Migrarea nu a returnat un rezultat.'],500);
+}
+
 function fleetos_vehicle_schema(): array {
     $properties=['make'=>['type'=>['string','null']],'model'=>['type'=>['string','null']],'variant'=>['type'=>['string','null']],'year'=>['type'=>['integer','null']],'registration'=>['type'=>['string','null']],'vin'=>['type'=>['string','null']],'engineNumber'=>['type'=>['string','null']],'firstRegistration'=>['type'=>['string','null']],'color'=>['type'=>['string','null']],'maxMassKg'=>['type'=>['number','null']],'kilometers'=>['type'=>['number','null']],'operatingHours'=>['type'=>['number','null']],'category'=>['type'=>'string'],'sourceTypes'=>['type'=>'array','items'=>['type'=>'string']],'confidence'=>['type'=>'string','enum'=>['ridicată','moderată','scăzută','neverificată']],'verificationPassed'=>['type'=>'boolean'],'verificationNotes'=>['type'=>'string'],'discrepancies'=>['type'=>'array','items'=>['type'=>'string']],'notes'=>['type'=>'string']];
     return ['type'=>'object','additionalProperties'=>false,'properties'=>$properties,'required'=>array_keys($properties)];
@@ -139,6 +207,7 @@ if ($route === 'health' && $method === 'GET') fleetos_json(['ok' => true, 'confi
 if ($route === 'vehicle/read' && $method === 'POST') fleetos_read_vehicle();
 if ($route === 'vehicle/investigate' && $method === 'POST') fleetos_investigate();
 if ($route === 'whatsapp/send' && $method === 'POST') fleetos_whatsapp();
+if ($route === 'migrate' && $method === 'POST') fleetos_apply_migrations(fleetos_body());
 
 if (!in_array($route, ['state','documents'], true)) fleetos_json(['error'=>'Endpoint necunoscut: '.$route],404);
 if (($route === 'state' && !in_array($method,['GET','PUT'],true)) || ($route === 'documents' && !in_array($method,['GET','POST','DELETE'],true))) fleetos_json(['error'=>'Metodă neacceptată.'],405);
@@ -146,8 +215,14 @@ if (($route === 'state' && !in_array($method,['GET','PUT'],true)) || ($route ===
 $pdo = fleetos_db();
 
 if ($route === 'state' && $method === 'GET') {
-    $row = $pdo->query('SELECT revision, payload FROM fleetos_state WHERE state_id = 1')->fetch();
-    fleetos_json(['revision' => (int)($row['revision'] ?? 0), 'state' => $row ? json_decode($row['payload'], true) : null]);
+    try {
+        $row = $pdo->query('SELECT revision, payload FROM fleetos_state WHERE state_id = 1')->fetch();
+        fleetos_json(['revision' => (int)($row['revision'] ?? 0), 'state' => $row ? json_decode($row['payload'], true) : null]);
+    } catch (PDOException $error) {
+        error_log('FleetOS state read failed: ' . $error->getMessage());
+        if ((string)$error->getCode() === '42S02') fleetos_json(['error'=>'Tabelele FleetOS lipsesc. Apăsați Setări → Migrare / actualizare bază de date.'],503);
+        fleetos_json(['error'=>'Citirea bazei FleetOS a eșuat. Verificați schema și jurnalul PHP al hostingului.'],503);
+    }
 }
 if ($route === 'state' && $method === 'PUT') {
     $body = fleetos_body();

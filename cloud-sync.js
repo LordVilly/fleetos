@@ -200,6 +200,37 @@
       context.notify('Nu am putut încărca datele centrale: ' + error.message);
     } finally { busy = false; }
   }
+  async function migrateAndConnect() {
+    if (!token()) return context?.notify('Autentificați-vă în FleetOS înainte de migrare.');
+    if (!confirm('FleetOS va crea tabelele lipsă, va aplica migrațiile SQL noi și va inițializa flota numai dacă baza nu conține deja date. Datele existente nu vor fi înlocuite. Continuați?')) return;
+    const button = document.querySelector('#fleetMigrateButton');
+    if (button) button.disabled = true;
+    setStatus('Se verifică și se actualizează schema MySQL…');
+    try {
+      const response = await request('/api/migrate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: context.getState() }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Migrarea bazei de date nu a reușit.');
+      if (data.stateInserted) {
+        context.enableCloud(Number(data.revision || 1));
+        paused = false;
+        await uploadPendingDocuments();
+        setStatus('Baza centrală inițializată', true);
+        context.notify('Baza MySQL a fost migrată și flota locală inițială a fost salvată.');
+      } else if (data.stateExists) {
+        await bootstrap();
+        if (data.applied?.length) setStatus('Baza a fost actualizată · ' + data.applied.length + ' migrații', true);
+        else if (!context.getState().settings?.cloudSyncEnabled) setStatus('Schema este la zi · conectați flota centrală');
+        context.notify(data.applied?.length ? 'Migrarea a reușit: ' + data.applied.join(', ') : 'Schema bazei de date este deja la zi.');
+      } else {
+        setStatus('Schema pregătită · flota locală încă nu a fost inițializată', true);
+        context.notify('Tabelele au fost create, dar nu s-a găsit un snapshot FleetOS. Reîncărcați pagina din browserul care conține flota pentru inițializare.');
+      }
+      context.render();
+    } catch (error) {
+      setStatus('Migrarea necesită atenție');
+      context.notify(error.message);
+    } finally { if (button?.isConnected) button.disabled = false; }
+  }
   async function syncToServer() {
     if (!token()) return context.notify('Conectați-vă mai întâi la serverul FleetOS.');
     try {
@@ -283,10 +314,10 @@
   function panelHtml() {
     const enabled = !!context?.getState().settings?.cloudSyncEnabled;
     const current = token() ? 'Sesiune FleetOS autentificată' : 'Autentificați-vă pentru sincronizare';
-    return `<div class="panel"><div class="section-title"><div><h2>Sincronizare PC ↔ telefon</h2><p class="muted">Datele centrale FleetOS sunt păstrate în MySQL. Folosiți același cont pe dispozitive.</p></div><span id="fleetCloudStatus" class="badge ${enabled ? 'good' : 'warn'}">${escapeHtml(lastMessage)}</span></div><div class="toolbar"><button type="button" onclick="FleetCloud.connect()">Testează conexiunea</button><button type="button" onclick="FleetCloud.syncFromServer()">Încarcă de pe server</button><button type="button" class="primary" onclick="FleetCloud.syncToServer()">Trimite copia locală</button></div><p class="muted">${escapeHtml(current)}. Dacă dispozitivele se modifică simultan, sincronizarea se oprește la conflict pentru a evita suprascrierea silențioasă.</p></div>`;
+    return `<div class="panel"><div class="section-title"><div><h2>Migrare / actualizare bază de date</h2><p class="muted">Creează tabelele lipsă, rulează fișierele SQL noi din database/migrations și inițializează MySQL numai dacă este gol. Nu înlocuiește date existente.</p></div><button id="fleetMigrateButton" class="primary" type="button" onclick="FleetCloud.migrateAndConnect()">Migrare / actualizare</button></div><p class="muted">Utilizatorul MySQL trebuie să aibă privilegiile CREATE și ALTER. Actualizările fișierelor aplicației se publică separat în cPanel.</p></div><div class="panel"><div class="section-title"><div><h2>Sincronizare PC ↔ telefon</h2><p class="muted">MySQL este baza centrală FleetOS. Folosiți același cont pe dispozitive.</p></div><span id="fleetCloudStatus" class="badge ${enabled ? 'good' : 'warn'}">${escapeHtml(lastMessage)}</span></div><div class="toolbar"><button type="button" onclick="FleetCloud.connect()">Testează conexiunea</button><button type="button" onclick="FleetCloud.syncFromServer()">Încarcă de pe server</button><button type="button" class="primary" onclick="FleetCloud.syncToServer()">Trimite copia locală</button></div><p class="muted">${escapeHtml(current)}. Dacă dispozitivele se modifică simultan, sincronizarea se oprește la conflict pentru a evita suprascrierea silențioasă.</p></div>`;
   }
   function init(value) { context = value; if (context.getState().settings?.cloudSyncEnabled && token()) schedule(); }
-  window.FleetCloud = { init, panelHtml, request, schedule, connect, bootstrap, syncToServer, syncFromServer, downloadDocument, deleteDocument, fullBackup };
+  window.FleetCloud = { init, panelHtml, request, schedule, connect, bootstrap, migrateAndConnect, syncToServer, syncFromServer, downloadDocument, deleteDocument, fullBackup };
   window.FleetCloudReady?.();
   window.addEventListener('online', schedule);
   window.addEventListener('online', () => { if (token()) bootstrap(); });
