@@ -1,85 +1,71 @@
-# FleetOS — rulare locală și import cu GPT
+# FleetOS — instalare PHP pe cPanel
 
-Aplicația se deschide prin serverul local, nu direct din `index.html`, pentru ca funcțiile de server să poată folosi API-ul. Dacă aveți date salvate în versiunea deschisă cu `file://`, generați înainte de mutare un backup complet din **Setări → Backup și sincronizare**.
+FleetOS este o aplicație web/PWA. Interfața rulează în browser, iar backendul este PHP 8.1+ cu MySQL. Nu este necesar Node.js pe calculator sau pe hosting. PC-ul și telefonul folosesc aceleași date centrale când sincronizarea este activată.
 
-## Cerințe
+## Cerințe pe cPanel
 
-- Node.js 20 sau mai nou
-- O cheie API OpenAI cu acces la un model cu analiză de imagini
+- PHP 8.1 sau mai nou (recomandat: 8.3+); activați `PDO MySQL`, `cURL`, `OpenSSL`, `JSON` și `mbstring` în **Select PHP Version**.
+- Apache cu `mod_rewrite` și `.htaccess` permis.
+- MySQL/MariaDB și HTTPS pentru `villy.daserdesign.ro`.
+- Pentru funcțiile GPT și WhatsApp, conturi/API-uri configurate separat și acces HTTPS de ieșire permis de hosting.
 
-## Pornire în PowerShell
+## Instalare
 
-```powershell
-$env:OPENAI_API_KEY = "cheia-ta-api"
-npm start
-```
+1. Creați baza de date și utilizatorul în **cPanel → MySQL Database Wizard**; acordați utilizatorului toate privilegiile asupra bazei.
+2. În phpMyAdmin, selectați baza și importați `database/schema.sql`.
+3. Faceți pull al branch-ului `main` în directorul document root al domeniului (`public_html` sau document root-ul `villy.daserdesign.ro`). Fișierele proiectului trebuie să fie direct în document root, astfel încât `index.html` să se deschidă la `/`.
+4. Copiați `.env.example` ca `.env` în același director și înlocuiți valorile exemplu cu datele bazei, utilizatorul și o parolă unică lungă pentru FleetOS. Numele MySQL cPanel au de obicei prefixul contului. Nu încărcați `.env` în GitHub.
+5. Opțional, completați cheia OpenAI și datele WhatsApp Business Cloud. Nu activați funcțiile respective până când integrarea nu este configurată. `WHATSAPP_API_VERSION` trebuie să fie versiunea Graph API activă pentru aplicația Meta.
+6. Deschideți `https://villy.daserdesign.ro`. Verificați autentificarea și apoi **Setări → Sincronizare PC ↔ telefon → Testează conexiunea**. Pentru prima migrare, importați datele local înainte de a porni sincronizarea; consultați secțiunea următoare.
 
-Apoi deschideți `http://127.0.0.1:4173`. Pentru alt model, setați opțional `OPENAI_MODEL` înainte de `npm start`; implicit este `gpt-6-astra`.
+`.env` este blocat de `.htaccess`. Înainte de a scrie parole reale, confirmați că `https://villy.daserdesign.ro/.env` nu afișează conținut. Păstrați HTTPS activ permanent.
 
-Fără `OPENAI_API_KEY`, restul aplicației funcționează, iar butonul GPT afișează clar că integrarea nu este configurată. Cheia rămâne doar în mediul serverului și nu ajunge în browser.
+## Migrarea datelor locale
 
-## Documente tehnice și asistență GPT în fișa vehiculului
-
-În secțiunea **Informații suplimentare** se pot atașa fișiere de orice tip; fișierele sunt stocate în IndexedDB pe dispozitivul/browserul folosit. În fereastra de diagnostic se pot încărca și imagini noi cu martorul ori codul de eroare; după o analiză reușită acestea se atașează fișei și se salvează în istoric. PDF-urile, imaginile PNG/JPEG/WEBP/GIF, fișierele text uzuale, Word, Excel, PowerPoint și ODT pot fi selectate explicit pentru a fi trimise la OpenAI într-o investigație. Formatele neacceptate de Responses API rămân disponibile pentru descărcare din fișă. Investigațiile și sursele lor sunt salvate în istoricul local al vehiculului; toate investigațiile GPT anterioare sunt retrimise ca context la următoarea analiză.
-
-După importul unui vehicul prin **Adaugă cu GPT**, aplicația pornește o căutare web obligatorie. GPT propune manuale PDF/HTML de surse HTTPS citate; serverul acceptă descărcarea doar pentru surse marcate oficial cu încredere ridicată, citate de căutare, cu tipul real PDF/HTML și adresă IP publică. Documentul descărcat este atașat fișei locale. Datele pentru uleiuri, lichide și filtre se salvează automat ca repere numai când modelul le leagă de sursa oficială descărcată și le marchează cu încredere ridicată. Celelalte rămân propuneri de verificat. Dacă vehiculul are deja kilometri/ore, aplicația cere introducerea confirmată a ultimei înlocuiri înainte să activeze calculele scadenței. Nu poate garanta găsirea unui manual oficial sau potrivirea exactă când lipsesc varianta, motorul ori VIN-ul.
-
-Pentru aceste funcții este necesară pornirea prin serverul local și configurarea OPENAI_API_KEY; cheia nu este inclusă în livrabil. Fișierele atașate unei investigații și întrebarea sunt trimise la OpenAI după apăsarea butonului de analiză.
-
-## Importul vehiculului
-
-Din Flotă apăsați **Adaugă cu GPT**, selectați fotografii clare ale certificatului, cărții tehnice, plăcuței sau contoarelor. GPT identifică tipul fiecărei surse, extrage câmpurile, apoi face o a doua analiză independentă a acelorași imagini. Vehiculul se creează numai dacă a doua verificare confirmă datele esențiale și încrederea nu este scăzută. Datele incerte sau contradictorii nu se înregistrează; imaginile trebuie reîncărcate mai clar. Fișa salvează tipurile de sursă și notele verificării; numărul intern FleetOS se generează local când documentele nu îl conțin.
-
-Formatele acceptate: PNG, JPEG, WEBP și GIF. Limită: 8 fotografii, maximum 12 MB total. Fotografiile importului sunt ținute temporar în memorie pentru cererea API. La inițierea unei investigații GPT, datele vehiculului relevante și fișierele selectate sunt trimise la OpenAI pentru analiză. Datele FleetOS sunt păstrate în browser până la conectarea sincronizării și apoi în baza MySQL centrală; cheia API rămâne doar pe server.
-
-## Documentație
-
-Fluxul folosește Responses API cu imagini `input_image` în format data URL și Structured Outputs pentru schema de date. Consultați [OpenAI Images and vision](https://developers.openai.com/api/docs/guides/images-vision) și [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
-
-## Trimiterea cererilor de piese prin WhatsApp Business
-
-Butonul **Trimite cererea către toți furnizorii** apelează direct endpoint-ul local și transmite câte un mesaj fiecărui destinatar introdus. Aplicația înregistrează separat răspunsul API pentru fiecare furnizor; starea „acceptată de WhatsApp” confirmă acceptarea API, nu livrarea sau citirea mesajului.
-
-Pentru trimitere reală, deschideți aplicația prin serverul local (nu prin `file://`) și configurați pe server variabilele de mediu:
-
-- `WHATSAPP_ACCESS_TOKEN` — token pentru WhatsApp Business Cloud API;
-- `WHATSAPP_PHONE_NUMBER_ID` — ID-ul numărului expeditor înregistrat;
-- `WHATSAPP_API_VERSION` — versiunea Graph API activă în aplicația Meta;
-- opțional, `WHATSAPP_TEMPLATE_NAME` și `WHATSAPP_TEMPLATE_LANGUAGE` — șablon aprobat, cu un singur parametru text în corp pentru întregul mesaj FleetOS.
-
-Dacă nu este configurat un șablon, API-ul încearcă trimiterea ca mesaj text; WhatsApp poate respinge mesajul când nu există o fereastră de conversație activă. Pentru solicitări inițiate de firmă în afara ferestrei permise, configurați un șablon aprobat și setați numele și limba acestuia. Păstrați tokenul numai în mediul serverului, niciodată în interfața HTML.
-
-## cPanel, PHP și MySQL — starea actuală
-
-Domeniul vizat este `https://villy.daserdesign.ro/`. Versiunea PHP adăugată include ecranul de autentificare, sesiunea cu protecție CSRF, API-ul pentru starea FleetOS și documente, sincronizarea PC–telefon și scriptul PHP de import al backupului.
-
-**Această versiune nu este încă pregătită pentru utilizare completă pe cPanel.** Endpointurile de analiză GPT, documente tehnice și trimitere WhatsApp există momentan numai în `server.js` (Node.js); `api/index.php` nu le-a portat încă și răspunde cu HTTP 501. Pe hosting fără Node, aceste funcții nu vor funcționa până la portarea lor în PHP. PHP nu este disponibil în mediul de dezvoltare folosit pentru acest push, deci fișierele PHP nu au trecut `php -l` și nici o conectare reală la MySQL.
-
-### Configurarea cPanel după finalizarea backendului PHP
-
-1. Activează HTTPS pentru `villy.daserdesign.ro` și setează document root-ul domeniului către folderul `outputs` din repository.
-2. În **MySQL Database Wizard**, creează baza și utilizatorul MySQL, apoi acordă utilizatorului drepturi asupra bazei.
-3. În **phpMyAdmin**, selectează baza și importă `database/schema.sql`.
-4. Copiază `.env.example` în `.env` în directorul aplicației și completează `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `FLEETOS_LOGIN_USER` și `FLEETOS_LOGIN_PASSWORD`. Numele bazei și utilizatorului includ de obicei prefixul contului cPanel.
-5. Păstrează `.env` în afara accesului web. `.htaccess` blochează accesul direct, dar verifică protecția cu URL-ul `https://villy.daserdesign.ro/.env` înainte de a introduce parole reale. Folosește PHP cu extensiile PDO MySQL și cURL activate.
-6. După portarea și testarea endpointurilor încă lipsă, conectează primul dispozitiv, autentifică-te și folosește **Setări → Sincronizare PC ↔ telefon → Trimite copia locală** pentru inițializarea bazei.
-
-### Importul datelor existente
-
-Înaintea migrării, generează **Setări → Backup și sincronizare → backup complet**. Backupul versiunea 2 include datele FleetOS și fișierele atașate din IndexedDB. Păstrează-l într-un director privat, în afara `public_html`. După instalarea PHP pe contul cPanel, comanda de import va fi:
+1. În versiunea curentă, generați **Setări → Backup și sincronizare → backup complet** și păstrați fișierul într-un loc privat.
+2. Puneți backupul temporar într-o cale privată pe contul cPanel, în afara document root-ului.
+3. Dacă furnizorul oferă PHP CLI/SSH, rulați din directorul aplicației:
 
 ```bash
 php scripts/import-local-backup.php /home/CPANELUSER/fleetos-backup.json
 ```
 
-Importul refuză implicit să suprascrie o bază care conține deja o flotă. `--replace` înlocuiește explicit datele și documentele existente; folosește-l numai după un backup separat.
+Importul se oprește fără modificări dacă baza are deja date. Opțiunea `--replace` suprascrie explicit starea și documentele serverului și trebuie folosită numai după un backup separat. Dacă nu aveți SSH/PHP CLI, configurați mai întâi aplicația și folosiți opțiunea **Trimite copia locală** doar când baza este goală și ați verificat backupul. Nu selectați sincronizarea de pe server înainte de import, deoarece va înlocui datele locale.
 
-### Funcții care trebuie portate înainte de utilizarea pe cPanel
+## `.env.example`
 
-- API-ul de analiză a fotografiilor vehiculului cu GPT;
-- API-ul de investigare și căutare web pentru defecțiuni/manuale;
-- descărcarea controlată a manualelor oficiale;
-- trimiterea WhatsApp Business și configurarea sigură a tokenurilor în `.env`;
-- testele de autentificare, migrare, sincronizare, documente și regresie în versiunea PHP.
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`: conexiune PDO MySQL.
+- `FLEETOS_LOGIN_USER`, `FLEETOS_LOGIN_PASSWORD`: autentificarea aplicației. Folosiți o parolă puternică și unică.
+- `OPENAI_API_KEY`, `OPENAI_MODEL`: citire documente, investigații și căutare web GPT.
+- `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_API_VERSION`: WhatsApp Business Cloud API.
+- `WHATSAPP_TEMPLATE_NAME`, `WHATSAPP_TEMPLATE_LANGUAGE`: opțional, șablon WhatsApp aprobat.
 
-Până la încheierea acestor pași, păstrează aplicația locală și backupurile. Nu considera sincronizarea cPanel sau funcțiile GPT/WhatsApp validate doar pentru că interfața se încarcă.
+Pentru mesajele inițiate de firmă, WhatsApp poate cere un șablon aprobat. FleetOS raportează trimiterea ca reușită numai după ce API-ul WhatsApp returnează ID-ul mesajului; acceptarea API nu garantează livrarea sau citirea.
+
+## Rulare locală fără Node.js
+
+Este necesar PHP 8.1+ (recomandat: 8.3+) cu PDO MySQL și cURL. Copiați `.env.example` în `.env`, completați configurația, apoi porniți din acest director:
+
+```bash
+php -S 127.0.0.1:4173 router.php
+```
+
+Deschideți `http://127.0.0.1:4173`. Pentru testarea pe telefon, folosiți un host HTTPS; service worker-ul PWA nu funcționează pe un IP local obișnuit fără HTTPS.
+
+## Date și backupuri
+
+Datele flotei sunt salvate ca snapshot JSON versionat în MySQL, iar fișierele atașate separat ca BLOB. Sincronizarea oprește salvarea la conflict de versiune, pentru a nu suprascrie tacit modificările altui dispozitiv. Datele offline rămân în localStorage/IndexedDB până la sincronizare. Faceți backup atât din FleetOS, cât și prin instrumentele cPanel înainte de migrări sau actualizări.
+
+PWA poate păstra interfața cache-uită offline, dar autentificarea, MySQL, GPT, căutarea web și WhatsApp necesită conexiune. Ștergerea datelor browserului poate elimina copii locale nesincronizate.
+
+## Verificări după publicare
+
+- Login, logout și protecția paginii/API-ului.
+- `https://villy.daserdesign.ro/api/health` după autentificare și conexiunea MySQL.
+- Sincronizare inițială, apoi modificare și sincronizare pe al doilea dispozitiv.
+- Atașare, descărcare și ștergere document; backup complet și restaurare într-o bază de test.
+- Test GPT cu o imagine de identificare și o investigație web cu un document atașat.
+- Test WhatsApp numai către un destinatar autorizat, cu mesaj/șablon test.
+- Instalare PWA din browser și actualizare controlată.
+
+Interfața, sincronizarea și API-urile PHP sunt pregătite pentru hosting PHP; integrarea efectivă cu MySQL/OpenAI/WhatsApp trebuie validată pe contul cPanel, deoarece depinde de extensiile, credențialele și politicile acelui hosting.

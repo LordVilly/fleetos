@@ -45,6 +45,21 @@
       } catch (error) { message.textContent = error.message; }
     }
   };
+  // Mutating endpoints use the authenticated PHP session and its CSRF token.
+  // Several feature flows call fetch directly rather than going through FleetCloud.
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init = {}) => {
+    let url = '';
+    try { url = new URL(typeof input === 'string' ? input : input.url, location.href).pathname; } catch {}
+    const method = String(init.method || (typeof input !== 'string' && input.method) || 'GET').toUpperCase();
+    if (url.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+      const headers = new Headers((typeof input !== 'string' && input.headers) || {});
+      new Headers(init.headers || {}).forEach((value, key) => headers.set(key, value));
+      if (csrf) headers.set('X-CSRF-Token', csrf);
+      init = { ...init, headers, credentials: 'same-origin' };
+    }
+    return nativeFetch(input, init);
+  };
   function addLogout() {
     const header = document.querySelector('.topin');
     if (!header || header.querySelector('.fleet-logout')) return;

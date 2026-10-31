@@ -21,7 +21,9 @@ function fleetos_env(): array {
 
 function fleetos_value(string $key, string $default = ''): string {
     $env = fleetos_env();
-    return (string)($env[$key] ?? getenv($key) ?: $default);
+    if (array_key_exists($key, $env)) return (string)$env[$key];
+    $value = getenv($key);
+    return $value === false ? $default : (string)$value;
 }
 
 function fleetos_json(array $data, int $status = 200): never {
@@ -36,12 +38,13 @@ function fleetos_db(): PDO {
     static $pdo = null;
     if ($pdo instanceof PDO) return $pdo;
     $host = fleetos_value('DB_HOST');
+    $port = fleetos_value('DB_PORT', '3306');
     $name = fleetos_value('DB_NAME');
     $user = fleetos_value('DB_USER');
     $pass = fleetos_value('DB_PASSWORD');
     if ($host === '' || $name === '' || $user === '') fleetos_json(['error' => 'Configurați DB_HOST, DB_NAME, DB_USER și DB_PASSWORD în fișierul .env.'], 503);
     try {
-        $pdo = new PDO("mysql:host={$host};dbname={$name};charset=utf8mb4", $user, $pass, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC, PDO::ATTR_EMULATE_PREPARES => false]);
+        $pdo = new PDO("mysql:host={$host};port={$port};dbname={$name};charset=utf8mb4", $user, $pass, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC, PDO::ATTR_EMULATE_PREPARES => false, PDO::ATTR_TIMEOUT => 8]);
     } catch (Throwable $error) {
         error_log('FleetOS MySQL connection failed: ' . $error->getMessage());
         fleetos_json(['error' => 'Conexiunea la MySQL a eșuat. Verificați datele din .env și drepturile utilizatorului bazei.'], 503);
@@ -67,6 +70,8 @@ function fleetos_require_auth(bool $mutation = false): void {
 }
 
 function fleetos_body(): array {
+    $length = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
+    if ($length > 32 * 1024 * 1024) fleetos_json(['error' => 'Cererea depășește limita de 32 MB.'], 413);
     $raw = file_get_contents('php://input');
     $body = json_decode($raw ?: '', true);
     if (!is_array($body)) fleetos_json(['error' => 'Corpul cererii nu este JSON valid.'], 400);

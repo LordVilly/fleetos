@@ -2,9 +2,18 @@ Options -Indexes
 RewriteEngine On
 
 # Protejează configurarea și fișierele de dezvoltare pe hostingul Apache/cPanel.
-<FilesMatch "^(\.env(\..*)?|package(-lock)?\.json|server\.js)$">
+<FilesMatch "^(\.env(\..*)?|package(-lock)?\.json|server\.js|README\.md|.*\.sql|bootstrap\.php)$">
   Require all denied
 </FilesMatch>
 
-RewriteCond %{REQUEST_URI} !/api/index\.php$
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "DENY"
+  Header always set Referrer-Policy "no-referrer"
+</IfModule>
+
+RewriteRule ^(?:database|scripts)/ - [F,L,NC]
+RewriteRule ^api/(?!index\.php$).*\.php$ - [F,L,NC]
+RewriteRule ^(?:\.git|\.github)(?:/|$) - [F,L,NC]
+
 RewriteRule ^api/([a-zA-Z0-9/_-]+)$ api/index.php?route=$1 [QSA,L]
