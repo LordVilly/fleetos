@@ -48,12 +48,16 @@ function fleetos_db(): PDO {
     } catch (Throwable $error) {
         error_log('FleetOS MySQL connection failed: ' . $error->getMessage());
         $detail = strtolower($error->getMessage());
-        $code = (string)$error->getCode();
+        $errorInfo = $error instanceof PDOException ? ($error->errorInfo ?? []) : [];
+        $sqlState = (string)($errorInfo[0] ?? $error->getCode());
+        $driverCode = (string)($errorInfo[1] ?? '');
+        $code = $driverCode !== '' ? $driverCode : (string)$error->getCode();
+        $suffix = ' (SQLSTATE ' . ($sqlState !== '' ? $sqlState : 'necunoscut') . ($driverCode !== '' ? '; cod MySQL ' . $driverCode : '') . ').';
         if (str_contains($detail, 'could not find driver')) $message = 'Extensia PHP PDO MySQL (pdo_mysql) nu este activată în cPanel.';
-        elseif ($code === '1045' || str_contains($detail, 'access denied')) $message = 'MySQL a refuzat autentificarea. Verificați DB_NAME, DB_USER, DB_PASSWORD și privilegiile utilizatorului în cPanel.';
-        elseif ($code === '1049' || str_contains($detail, 'unknown database')) $message = 'Baza indicată în DB_NAME nu există. Creați-o în cPanel și copiați numele complet cu prefix.';
-        elseif ($code === '2002' || $code === '2003' || str_contains($detail, 'connection refused')) $message = 'MySQL nu este accesibil la DB_HOST/DB_PORT. Folosiți hostul indicat de furnizorul cPanel.';
-        else $message = 'Conexiunea MySQL nu a reușit. Verificați DB_HOST, DB_PORT, numele bazei, utilizatorul, parola și privilegiile în cPanel.';
+        elseif ($code === '1045' || str_contains($detail, 'access denied')) $message = 'MySQL a refuzat autentificarea. Verificați DB_USER, DB_PASSWORD și asocierea utilizatorului cu baza.' . $suffix;
+        elseif ($code === '1049' || str_contains($detail, 'unknown database')) $message = 'Baza indicată în DB_NAME nu există. Creați-o în cPanel și copiați numele complet cu prefix.' . $suffix;
+        elseif ($code === '2002' || $code === '2003' || str_contains($detail, 'connection refused')) $message = 'MySQL nu este accesibil la DB_HOST/DB_PORT. Folosiți hostul indicat de furnizorul cPanel.' . $suffix;
+        else $message = 'Conexiunea MySQL nu a reușit. Verificați DB_HOST, DB_PORT, DB_NAME, DB_USER și privilegiile în cPanel.' . $suffix;
         fleetos_json(['error' => $message], 503);
     }
     return $pdo;
