@@ -29,6 +29,16 @@
     if (!response.ok) throw new Error(data.error || 'Nu am putut citi datele de pe server.');
     return data;
   }
+  function mergeUnlinkedLocalRecords(local, remote) {
+    const merged = { ...local, ...remote, settings: { ...(local.settings || {}), ...(remote.settings || {}) } };
+    for (const key of ['vehicles', 'parts', 'safety', 'orders', 'history', 'alerts', 'alertResolutions']) {
+      const central = Array.isArray(remote[key]) ? remote[key] : [];
+      const ids = new Set(central.map(item => item?.id).filter(Boolean));
+      const localOnly = (Array.isArray(local[key]) ? local[key] : []).filter(item => item?.id && !ids.has(item.id));
+      merged[key] = [...central, ...localOnly];
+    }
+    return merged;
+  }
   async function sendState(state, revision) {
     const response = await request('/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state, revision }) });
     const data = await response.json().catch(() => ({}));
@@ -172,16 +182,19 @@
       }
       // The server is authoritative, but retain a downloadable local copy before replacing
       // a browser that already contains unsynchronized data.
-      if (!confirm('Există date FleetOS salvate în acest browser, iar serverul conține deja flota centrală. Pentru a conecta acest browser, aplicația va face un backup local descărcabil și apoi va încărca datele de pe server. Continuați?')) {
+      if (!confirm('Există date locale nesincronizate și o flotă pe server. FleetOS va păstra datele de pe server, va adăuga înregistrările locale cu identificatori inexistenți acolo și va descărca un backup local. Pentru aceiași identificatori, versiunea serverului rămâne prioritară. Continuați?')) {
         paused = true;
         setStatus('Conectare în așteptare · datele locale au fost păstrate');
         return;
       }
       await context.downloadFullBackup();
-      context.applyRemote(remote.state, Number(remote.revision || 0));
+      const merged = mergeUnlinkedLocalRecords(local, remote.state);
+      const revision = await sendState(merged, Number(remote.revision || 0));
+      context.applyRemote(merged, revision);
+      await uploadPendingDocuments();
       paused = false;
       setStatus('Conectat la baza centrală', true);
-      context.notify('Datele centrale au fost încărcate. Backupul local anterior a fost descărcat înainte de înlocuire.');
+      context.notify('Datele locale care lipseau pe server au fost adăugate. Înregistrările centrale existente au fost păstrate, iar backupul local a fost descărcat.');
     } catch (error) {
       setStatus('Conexiune la baza centrală necesită atenție');
       context.notify('Nu am putut încărca datele centrale: ' + error.message);
