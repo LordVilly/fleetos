@@ -231,6 +231,26 @@
       context.notify(error.message);
     } finally { if (button?.isConnected) button.disabled = false; }
   }
+  async function syncForExit() {
+    if (!token()) throw new Error('Autentificați-vă pentru a trimite datele în baza centrală.');
+    if (!navigator.onLine) throw new Error('Dispozitivul este offline. Datele au rămas salvate local; conectați-vă la internet și încercați din nou.');
+    for (let attempt = 0; busy && attempt < 100; attempt++) await new Promise(resolve => setTimeout(resolve, 100));
+    if (busy) throw new Error('O altă sincronizare este încă în curs. Așteptați puțin și încercați din nou.');
+    clearTimeout(timer);
+    busy = true;
+    setStatus('Se salvează datele înainte de ieșire…');
+    try {
+      const revision = Number(context.getState().settings?.cloudRevision || 0);
+      const nextRevision = await sendState(context.getState(), revision);
+      persistRevision(nextRevision);
+      await uploadPendingDocuments();
+      setStatus('Sincronizat cu serverul', true);
+      return { synced: true, revision: nextRevision };
+    } catch (error) {
+      setStatus('Salvarea înainte de ieșire a eșuat');
+      throw error;
+    } finally { busy = false; }
+  }
   async function syncToServer() {
     if (!token()) return context.notify('Conectați-vă mai întâi la serverul FleetOS.');
     try {
@@ -317,7 +337,7 @@
     return `<div class="panel"><div class="section-title"><div><h2>Migrare / actualizare bază de date</h2><p class="muted">Creează tabelele lipsă, rulează fișierele SQL noi din database/migrations și inițializează MySQL numai dacă este gol. Nu înlocuiește date existente.</p></div><button id="fleetMigrateButton" class="primary" type="button" onclick="FleetCloud.migrateAndConnect()">Migrare / actualizare</button></div><p class="muted">Utilizatorul MySQL trebuie să aibă privilegiile CREATE și ALTER. Actualizările fișierelor aplicației se publică separat în cPanel.</p></div><div class="panel"><div class="section-title"><div><h2>Sincronizare PC ↔ telefon</h2><p class="muted">MySQL este baza centrală FleetOS. Folosiți același cont pe dispozitive.</p></div><span id="fleetCloudStatus" class="badge ${enabled ? 'good' : 'warn'}">${escapeHtml(lastMessage)}</span></div><div class="toolbar"><button type="button" onclick="FleetCloud.connect()">Testează conexiunea</button><button type="button" onclick="FleetCloud.syncFromServer()">Încarcă de pe server</button><button type="button" class="primary" onclick="FleetCloud.syncToServer()">Trimite copia locală</button></div><p class="muted">${escapeHtml(current)}. Dacă dispozitivele se modifică simultan, sincronizarea se oprește la conflict pentru a evita suprascrierea silențioasă.</p></div>`;
   }
   function init(value) { context = value; if (context.getState().settings?.cloudSyncEnabled && token()) schedule(); }
-  window.FleetCloud = { init, panelHtml, request, schedule, connect, bootstrap, migrateAndConnect, syncToServer, syncFromServer, downloadDocument, deleteDocument, fullBackup };
+  window.FleetCloud = { init, panelHtml, request, schedule, connect, bootstrap, migrateAndConnect, syncToServer, syncForExit, syncFromServer, downloadDocument, deleteDocument, fullBackup };
   window.FleetCloudReady?.();
   window.addEventListener('online', schedule);
   window.addEventListener('online', () => { if (token()) bootstrap(); });
