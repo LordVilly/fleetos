@@ -14,7 +14,7 @@ $backup = json_decode((string)file_get_contents($path), true);
 $state = ($backup['format'] ?? '') === 'fleetos-backup' ? ($backup['state'] ?? null) : $backup;
 $documents = ($backup['format'] ?? '') === 'fleetos-backup' && is_array($backup['documents'] ?? null) ? $backup['documents'] : [];
 if (!is_array($state) || !is_array($state['vehicles'] ?? null) || !is_array($state['history'] ?? null) || !is_array($state['orders'] ?? null) || !is_array($state['settings'] ?? null)) {
-    fwrite(STDERR, "Fișierul nu este un backup FleetOS valid.\n"); exit(2);
+    fwrite(STDERR, "Fișierul nu este un backup Agenda valid.\n"); exit(2);
 }
 
 try {
