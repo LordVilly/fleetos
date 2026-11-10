@@ -20,7 +20,7 @@ function fleetos_length(string $value): int { return function_exists('mb_strlen'
 function fleetos_apply_migrations(array $body): never {
     $state = $body['state'] ?? null;
     if ($state !== null && (!is_array($state) || !is_array($state['vehicles'] ?? null) || !is_array($state['history'] ?? null) || !is_array($state['orders'] ?? null) || !is_array($state['settings'] ?? null))) {
-        fleetos_json(['error'=>'Snapshotul inițial FleetOS nu are structura necesară.'],400);
+        fleetos_json(['error'=>'Snapshotul inițial Agenda nu are structura necesară.'],400);
     }
     $payload = $state === null ? null : json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     if ($payload !== null && (strlen($payload) > 30000000 || $payload === false)) fleetos_json(['error'=>'Snapshotul depășește limita de 30 MB sau nu poate fi serializat.'],413);
@@ -60,7 +60,7 @@ function fleetos_apply_migrations(array $body): never {
                 $statement = trim($statement);
                 if ($statement !== '') $pdo->exec($statement);
             }
-            $record->execute([$version, $checksum, (string)($_SESSION['fleetos_user'] ?? 'FleetOS')]);
+            $record->execute([$version, $checksum, (string)($_SESSION['fleetos_user'] ?? 'Agenda')]);
             $applied[] = $version;
         }
 
@@ -76,7 +76,7 @@ function fleetos_apply_migrations(array $body): never {
         $response = ['ok'=>true,'applied'=>$applied,'schemaVersion'=>array_key_last($files),'stateInserted'=>$stateInserted,'stateExists'=>(bool)$row,'revision'=>(int)($row['revision']??0),'message'=>$applied ? 'Migrațiile bazei de date au fost aplicate.' : 'Baza de date este deja la zi.'];
     } catch (Throwable $error) {
         if ($pdo->inTransaction()) $pdo->rollBack();
-        error_log('FleetOS migration failed: ' . $error->getMessage());
+        error_log('Agenda migration failed: ' . $error->getMessage());
         $failure = $error instanceof RuntimeException && str_starts_with($error->getMessage(),'Migrarea este deja în curs') ? $error->getMessage() : 'Migrarea bazei a eșuat. Verificați privilegiile CREATE/ALTER ale utilizatorului MySQL și jurnalul PHP al hostingului. Datele existente nu au fost suprascrise.';
     } finally {
         if ($locked) { try { $pdo->query("SELECT RELEASE_LOCK('{$lockName}')"); } catch (Throwable $ignored) {} }
@@ -154,7 +154,7 @@ function fleetos_download_manual(array $candidate,array $sources): ?array {
     $url=(string)($candidate['url']??'');$parts=parse_url($url);if(($candidate['officialSource']??false)!==true||($candidate['confidence']??'')!=='ridicată'||!$parts||($parts['scheme']??'')!=='https'||empty($parts['host'])||isset($parts['user'])||isset($parts['pass'])||(isset($parts['port'])&&$parts['port']!==443))return null;
     $cited=false;foreach($sources as $s){$p=parse_url($s['url']);if(($p['scheme']??'')==='https'&&strtolower($p['host']??'')===strtolower($parts['host'])&&($p['path']??'/')===($parts['path']??'/'))$cited=true;}if(!$cited)return null;
     $host=$parts['host'];$ips=gethostbynamel($host);if(!$ips)return null;$ip=$ips[0];if(!filter_var($ip,FILTER_VALIDATE_IP,FILTER_FLAG_NO_PRIV_RANGE|FILTER_FLAG_NO_RES_RANGE))return null;
-    $ch=curl_init($url);curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_FOLLOWLOCATION=>false,CURLOPT_CONNECTTIMEOUT=>10,CURLOPT_TIMEOUT=>25,CURLOPT_MAXFILESIZE=>20971520,CURLOPT_SSL_VERIFYPEER=>true,CURLOPT_SSL_VERIFYHOST=>2,CURLOPT_RESOLVE=>[$host.':443:'.$ip],CURLOPT_USERAGENT=>'FleetOS technical manual retrieval']);$bytes=curl_exec($ch);$status=(int)curl_getinfo($ch,CURLINFO_RESPONSE_CODE);$mime=strtolower(trim(explode(';',(string)curl_getinfo($ch,CURLINFO_CONTENT_TYPE))[0]));$effective=(string)curl_getinfo($ch,CURLINFO_EFFECTIVE_URL);curl_close($ch);
+    $ch=curl_init($url);curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_FOLLOWLOCATION=>false,CURLOPT_CONNECTTIMEOUT=>10,CURLOPT_TIMEOUT=>25,CURLOPT_MAXFILESIZE=>20971520,CURLOPT_SSL_VERIFYPEER=>true,CURLOPT_SSL_VERIFYHOST=>2,CURLOPT_RESOLVE=>[$host.':443:'.$ip],CURLOPT_USERAGENT=>'Agenda technical manual retrieval']);$bytes=curl_exec($ch);$status=(int)curl_getinfo($ch,CURLINFO_RESPONSE_CODE);$mime=strtolower(trim(explode(';',(string)curl_getinfo($ch,CURLINFO_CONTENT_TYPE))[0]));$effective=(string)curl_getinfo($ch,CURLINFO_EFFECTIVE_URL);curl_close($ch);
     if($bytes===false||$status<200||$status>=300||strlen($bytes)>20971520||!in_array($mime,['application/pdf','text/html'],true)||strtolower((string)parse_url($effective,PHP_URL_HOST))!==strtolower($host))return null;
     if(($mime==='application/pdf'&&!str_starts_with($bytes,'%PDF-'))||($mime==='text/html'&&!preg_match('/^\s*(?:<!doctype\s+html|<html|<head|<body)/i',$bytes)))return null;
     $path=basename($parts['path']??'manual');$name=preg_replace('/[^a-zA-Z0-9._-]+/','_',$path?:'manual');if(!preg_match('/\.(pdf|html?)$/i',$name))$name.=$mime==='application/pdf'?'.pdf':'.html';
@@ -219,9 +219,9 @@ if ($route === 'state' && $method === 'GET') {
         $row = $pdo->query('SELECT revision, payload FROM fleetos_state WHERE state_id = 1')->fetch();
         fleetos_json(['revision' => (int)($row['revision'] ?? 0), 'state' => $row ? json_decode($row['payload'], true) : null]);
     } catch (PDOException $error) {
-        error_log('FleetOS state read failed: ' . $error->getMessage());
-        if ((string)$error->getCode() === '42S02') fleetos_json(['error'=>'Tabelele FleetOS lipsesc. Apăsați Setări → Migrare / actualizare bază de date.'],503);
-        fleetos_json(['error'=>'Citirea bazei FleetOS a eșuat. Verificați schema și jurnalul PHP al hostingului.'],503);
+        error_log('Agenda state read failed: ' . $error->getMessage());
+        if ((string)$error->getCode() === '42S02') fleetos_json(['error'=>'Tabelele Agenda lipsesc. Apăsați Setări → Migrare / actualizare bază de date.'],503);
+        fleetos_json(['error'=>'Citirea bazei Agenda a eșuat. Verificați schema și jurnalul PHP al hostingului.'],503);
     }
 }
 if ($route === 'state' && $method === 'PUT') {
@@ -241,7 +241,7 @@ if ($route === 'state' && $method === 'PUT') {
         fleetos_json(['ok' => true, 'revision' => $next]);
     } catch (Throwable $error) {
         if ($pdo->inTransaction()) $pdo->rollBack();
-        error_log('FleetOS state save failed: ' . $error->getMessage());
+        error_log('Agenda state save failed: ' . $error->getMessage());
         fleetos_json(['error' => 'Salvarea în baza de date a eșuat.'], 500);
     }
 }
