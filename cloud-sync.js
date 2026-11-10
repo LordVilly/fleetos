@@ -20,7 +20,7 @@
     const headers = new Headers(options.headers || {});
     if (options.method && options.method !== 'GET' && window.FleetAuth?.csrf) headers.set('X-CSRF-Token', window.FleetAuth.csrf);
     const response = await fetch(url, { ...options, headers, credentials: 'same-origin', cache: 'no-store' });
-    if (response.status === 401) throw new Error('Sesiunea FleetOS a expirat. Autentificați-vă din nou.');
+    if (response.status === 401) throw new Error('Sesiunea Agenda a expirat. Autentificați-vă din nou.');
     return response;
   }
   async function getRemote() {
@@ -128,7 +128,7 @@
     timer = setTimeout(flush, 900);
   }
   async function connect() {
-    if (!token()) { context.notify('Autentificați-vă în FleetOS pentru a testa conexiunea.'); return; }
+    if (!token()) { context.notify('Autentificați-vă în Agenda pentru a testa conexiunea.'); return; }
     paused = false;
     try {
       const remote = await getRemote();
@@ -156,7 +156,7 @@
       if (!remote.state) {
         if (!context.hasLocalSnapshot?.()) {
           setStatus('Baza centrală goală · așteaptă dispozitivul cu datele flotei');
-          context.notify('Baza MySQL este goală. Deschideți FleetOS în browserul care conține flota inițială; acesta va publica datele pe server.');
+          context.notify('Baza MySQL este goală. Deschideți Agenda în browserul care conține flota inițială; acesta va publica datele pe server.');
           return;
         }
         const revision = await sendState(local, Number(remote.revision || 0));
@@ -164,7 +164,7 @@
         await uploadPendingDocuments();
         paused = false;
         setStatus('Baza centrală inițializată', true);
-        context.notify('Datele FleetOS au fost salvate în MySQL. Acest server va fi folosit de dispozitivele conectate.');
+        context.notify('Datele Agenda au fost salvate în MySQL. Acest server va fi folosit de dispozitivele conectate.');
         return;
       }
       if (local.settings?.cloudSyncEnabled && localRevision === Number(remote.revision || 0)) {
@@ -177,7 +177,7 @@
         const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
         if (total > 0) {
           const details = Object.entries(counts).filter(([, count]) => count > 0).map(([key, count]) => `${count} ${key}`).join(', ');
-          if (!confirm(`Serverul și acest dispozitiv au versiuni diferite. Am găsit ${details} care există pe telefon, dar lipsesc de pe server. FleetOS va descărca mai întâi un backup local, apoi va adăuga doar aceste înregistrări noi. Datele deja existente pe server nu vor fi șterse sau înlocuite; dacă același ID există pe ambele, versiunea serverului rămâne prioritară. Continuați?`)) {
+          if (!confirm(`Serverul și acest dispozitiv au versiuni diferite. Am găsit ${details} care există pe telefon, dar lipsesc de pe server. Agenda va descărca mai întâi un backup local, apoi va adăuga doar aceste înregistrări noi. Datele deja existente pe server nu vor fi șterse sau înlocuite; dacă același ID există pe ambele, versiunea serverului rămâne prioritară. Continuați?`)) {
             paused = true;
             setStatus('Sincronizare în așteptare · datele locale au fost păstrate');
             context.notify('Datele locale au rămas pe dispozitiv. Reluați sincronizarea numai după ce decideți cum doriți să reconciliați diferențele.');
@@ -198,7 +198,7 @@
         context.notify('Serverul și acest dispozitiv au revizii diferite, dar nu există înregistrări locale noi care să poată fi unite automat în siguranță. Datele locale au fost păstrate; nu s-a trimis nicio modificare.');
         return;
       }
-      // A browser with no prior FleetOS save is a first-time device (including Incognito).
+      // A browser with no prior Agenda save is a first-time device (including Incognito).
       // Load the central snapshot instead of displaying the local starter/demo state.
       if (!context.hasLocalSnapshot?.()) {
         context.applyRemote(remote.state, Number(remote.revision || 0));
@@ -210,7 +210,7 @@
       }
       // The server is authoritative, but retain a downloadable local copy before replacing
       // a browser that already contains unsynchronized data.
-      if (!confirm('Există date locale nesincronizate și o flotă pe server. FleetOS va păstra datele de pe server, va adăuga înregistrările locale cu identificatori inexistenți acolo și va descărca un backup local. Pentru aceiași identificatori, versiunea serverului rămâne prioritară. Continuați?')) {
+      if (!confirm('Există date locale nesincronizate și o flotă pe server. Agenda va păstra datele de pe server, va adăuga înregistrările locale cu identificatori inexistenți acolo și va descărca un backup local. Pentru aceiași identificatori, versiunea serverului rămâne prioritară. Continuați?')) {
         paused = true;
         setStatus('Conectare în așteptare · datele locale au fost păstrate');
         return;
@@ -229,8 +229,8 @@
     } finally { busy = false; }
   }
   async function migrateAndConnect() {
-    if (!token()) return context?.notify('Autentificați-vă în FleetOS înainte de migrare.');
-    if (!confirm('FleetOS va crea tabelele lipsă, va aplica migrațiile SQL noi și va inițializa flota numai dacă baza nu conține deja date. Datele existente nu vor fi înlocuite. Continuați?')) return;
+    if (!token()) return context?.notify('Autentificați-vă în Agenda înainte de migrare.');
+    if (!confirm('Agenda va crea tabelele lipsă, va aplica migrațiile SQL noi și va inițializa flota numai dacă baza nu conține deja date. Datele existente nu vor fi înlocuite. Continuați?')) return;
     const button = document.querySelector('#fleetMigrateButton');
     if (button) button.disabled = true;
     setStatus('Se verifică și se actualizează schema MySQL…');
@@ -251,7 +251,7 @@
         context.notify(data.applied?.length ? 'Migrarea a reușit: ' + data.applied.join(', ') : 'Schema bazei de date este deja la zi.');
       } else {
         setStatus('Schema pregătită · flota locală încă nu a fost inițializată', true);
-        context.notify('Tabelele au fost create, dar nu s-a găsit un snapshot FleetOS. Reîncărcați pagina din browserul care conține flota pentru inițializare.');
+        context.notify('Tabelele au fost create, dar nu s-a găsit un snapshot Agenda. Reîncărcați pagina din browserul care conține flota pentru inițializare.');
       }
       context.render();
     } catch (error) {
@@ -280,7 +280,7 @@
     } finally { busy = false; }
   }
   async function syncToServer() {
-    if (!token()) return context.notify('Conectați-vă mai întâi la serverul FleetOS.');
+    if (!token()) return context.notify('Conectați-vă mai întâi la serverul Agenda.');
     try {
       const remote = await getRemote();
       let revision = Number(remote.revision || 0);
@@ -300,7 +300,7 @@
     } catch (error) { setStatus('Sincronizare necesită atenție'); context.notify(error.message); }
   }
   async function syncFromServer() {
-    if (!token()) return context.notify('Conectați-vă mai întâi la serverul FleetOS.');
+    if (!token()) return context.notify('Conectați-vă mai întâi la serverul Agenda.');
     try {
       const remote = await getRemote();
       if (!remote.state) return context.notify('Baza de date nu conține încă o flotă. Încărcați datele de pe dispozitivul inițial.');
@@ -323,7 +323,7 @@
       if (Number(remote.revision || 0) !== localRevision) {
         paused = true;
         setStatus('Serverul s-a schimbat · încărcați versiunea serverului');
-        context.notify('Au apărut modificări FleetOS de pe celălalt dispozitiv. Încărcați versiunea serverului pentru a continua fără suprascriere.');
+        context.notify('Au apărut modificări Agenda de pe celălalt dispozitiv. Încărcați versiunea serverului pentru a continua fără suprascriere.');
       }
     } catch (error) { setStatus('Verificarea serverului a eșuat'); }
   }
