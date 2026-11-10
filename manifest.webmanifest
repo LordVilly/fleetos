@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "FleetOS · Administrare flotă",
-  "short_name": "FleetOS",
-  "description": "Administrarea flotei și mentenanței FleetOS",
+  "name": "Agenda · Administrare flotă",
+  "short_name": "Agenda",
+  "description": "Administrarea flotei și mentenanței Agenda",
   "lang": "ro-RO",
   "start_url": "/",
   "scope": "/",
