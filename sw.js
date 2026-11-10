@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'fleetos-shell-';
-const CACHE_NAME = `${CACHE_PREFIX}v4`;
+const CACHE_NAME = `${CACHE_PREFIX}v5`;
 const SHELL = [
   '/',
   '/index.html',
