@@ -5,7 +5,7 @@
   let csrf = '';
   const gate = document.createElement('div');
   gate.id = 'fleetLoginGate';
-  gate.innerHTML = `<div class="fleet-login-card"><div class="brand">Fleet<b>OS</b></div><h1>Autentificare</h1><p class="muted">Conectați-vă pentru a accesa datele flotei.</p><form id="fleetLoginForm"><label for="fleetLoginUser">Utilizator</label><input id="fleetLoginUser" name="username" autocomplete="username" required><label for="fleetLoginPassword">Parolă</label><input id="fleetLoginPassword" name="password" type="password" autocomplete="current-password" required><button class="primary" type="submit">Intră în FleetOS</button><p id="fleetLoginMessage" role="status"></p></form></div>`;
+  gate.innerHTML = `<div class="fleet-login-card"><div class="brand">Fleet<b>OS</b></div><h1>Autentificare</h1><p class="muted">Conectați-vă pentru a accesa datele flotei.</p><form id="fleetLoginForm"><label for="fleetLoginUser">Utilizator</label><input id="fleetLoginUser" name="username" autocomplete="username" required><label for="fleetLoginPassword">Parolă</label><input id="fleetLoginPassword" name="password" type="password" autocomplete="current-password" required><button class="primary" type="submit">Intră în Agenda</button><p id="fleetLoginMessage" role="status"></p></form></div>`;
   document.body.append(gate);
   const css = document.createElement('style');
   css.textContent = `#fleetLoginGate{position:fixed;inset:0;z-index:99999;display:none;place-items:center;padding:20px;background:#0b1214f2;backdrop-filter:blur(8px)}#fleetLoginGate.visible{display:grid}.fleet-login-card{width:min(100%,390px);padding:26px;border:1px solid #36484a;border-radius:22px;background:#152023;color:#ecf4ee;box-shadow:0 24px 80px #0008}.fleet-login-card h1{margin:14px 0 4px}.fleet-login-card form{display:grid;gap:10px;margin-top:20px}.fleet-login-card input{min-height:48px;padding:10px 12px;border:1px solid #46595a;border-radius:12px;background:#0d1719;color:#fff;font:inherit}.fleet-login-card button{min-height:48px;margin-top:8px}.fleet-login-card #fleetLoginMessage{color:#ffc274;min-height:1.2em}.fleet-logout{margin-left:8px}`;
@@ -67,7 +67,7 @@
     const button = document.createElement('button');
     button.type = 'button'; button.className = 'fleet-logout'; button.textContent = 'Ieșire';
     button.addEventListener('click', async () => {
-      if (!confirm('Doriți să încheiați sesiunea FleetOS?')) return;
+      if (!confirm('Doriți să încheiați sesiunea Agenda?')) return;
       try {
         await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-Token': csrf } });
         window.FleetAuth.authenticated = false; gate.classList.add('visible');
