@@ -39,6 +39,14 @@
     }
     return merged;
   }
+  function countUnlinkedLocalRecords(local, remote) {
+    const counts = {};
+    for (const key of ['vehicles', 'parts', 'safety', 'orders', 'history', 'alerts', 'alertResolutions']) {
+      const ids = new Set((Array.isArray(remote[key]) ? remote[key] : []).map(item => item?.id).filter(Boolean));
+      counts[key] = (Array.isArray(local[key]) ? local[key] : []).filter(item => item?.id && !ids.has(item.id)).length;
+    }
+    return counts;
+  }
   async function sendState(state, revision) {
     const response = await request('/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state, revision }) });
     const data = await response.json().catch(() => ({}));
@@ -165,9 +173,29 @@
         return;
       }
       if (local.settings?.cloudSyncEnabled) {
+        const counts = countUnlinkedLocalRecords(local, remote.state);
+        const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+        if (total > 0) {
+          const details = Object.entries(counts).filter(([, count]) => count > 0).map(([key, count]) => `${count} ${key}`).join(', ');
+          if (!confirm(`Serverul și acest dispozitiv au versiuni diferite. Am găsit ${details} care există pe telefon, dar lipsesc de pe server. FleetOS va descărca mai întâi un backup local, apoi va adăuga doar aceste înregistrări noi. Datele deja existente pe server nu vor fi șterse sau înlocuite; dacă același ID există pe ambele, versiunea serverului rămâne prioritară. Continuați?`)) {
+            paused = true;
+            setStatus('Sincronizare în așteptare · datele locale au fost păstrate');
+            context.notify('Datele locale au rămas pe dispozitiv. Reluați sincronizarea numai după ce decideți cum doriți să reconciliați diferențele.');
+            return;
+          }
+          await context.downloadFullBackup();
+          const merged = mergeUnlinkedLocalRecords(local, remote.state);
+          const revision = await sendState(merged, Number(remote.revision || 0));
+          context.applyRemote(merged, revision);
+          await uploadPendingDocuments();
+          paused = false;
+          setStatus('Datele locale lipsă au fost adăugate pe server', true);
+          context.notify(`Reconciliere reușită: au fost adăugate ${details}. Datele serverului au fost păstrate, iar un backup local a fost descărcat.`);
+          return;
+        }
         paused = true;
         setStatus('Conflict între dispozitive · sincronizare oprită');
-        context.notify('Serverul are modificări mai noi decât acest dispozitiv. Verificați Setări → Sincronizare înainte de a continua.');
+        context.notify('Serverul și acest dispozitiv au revizii diferite, dar nu există înregistrări locale noi care să poată fi unite automat în siguranță. Datele locale au fost păstrate; nu s-a trimis nicio modificare.');
         return;
       }
       // A browser with no prior FleetOS save is a first-time device (including Incognito).
@@ -341,3 +369,4 @@
   window.setInterval(checkRemoteRevision, 30000);
   window.addEventListener('focus', checkRemoteRevision);
 })();
+
