@@ -1,6 +1,6 @@
-# FleetOS — instalare PHP pe cPanel
+# Agenda — instalare PHP pe cPanel
 
-FleetOS este o aplicație web/PWA. Interfața rulează în browser, iar backendul este PHP 8.1+ cu MySQL. Nu este necesar Node.js pe calculator sau pe hosting. PC-ul și telefonul folosesc aceleași date centrale când sincronizarea este activată.
+Agenda este o aplicație web/PWA. Interfața rulează în browser, iar backendul este PHP 8.1+ cu MySQL. Nu este necesar Node.js pe calculator sau pe hosting. PC-ul și telefonul folosesc aceleași date centrale când sincronizarea este activată.
 
 ## Cerințe pe cPanel
 
@@ -14,7 +14,7 @@ FleetOS este o aplicație web/PWA. Interfața rulează în browser, iar backendu
 1. Creați baza de date și utilizatorul în **cPanel → MySQL Database Wizard**.
 2. Acordați utilizatorului MySQL toate privilegiile, inclusiv `CREATE`, `ALTER`, `INDEX`, `SELECT`, `INSERT`, `UPDATE` și `DELETE`. Schema se creează din aplicație la primul click pe butonul de migrare. Importul manual al `database/schema.sql` din phpMyAdmin rămâne disponibil ca alternativă.
 3. Faceți pull al branch-ului `main` în directorul document root al domeniului (`public_html` sau document root-ul `villy.daserdesign.ro`). Fișierele proiectului trebuie să fie direct în document root, astfel încât `index.html` să se deschidă la `/`.
-4. Copiați `.env.example` ca `.env` în același director și înlocuiți valorile exemplu cu datele bazei, utilizatorul și o parolă unică lungă pentru FleetOS. Numele MySQL cPanel au de obicei prefixul contului. Nu încărcați `.env` în GitHub.
+4. Copiați `.env.example` ca `.env` în același director și înlocuiți valorile exemplu cu datele bazei, utilizatorul și o parolă unică lungă pentru Agenda. Numele MySQL cPanel au de obicei prefixul contului. Nu încărcați `.env` în GitHub.
 5. Opțional, completați cheia OpenAI și datele WhatsApp Business Cloud. Nu activați funcțiile respective până când integrarea nu este configurată. `WHATSAPP_API_VERSION` trebuie să fie versiunea Graph API activă pentru aplicația Meta.
 6. Deschideți `https://villy.daserdesign.ro`, autentificați-vă și accesați **Setări → Migrare / actualizare bază de date**. Butonul creează tabelele lipsă, aplică fișierele SQL neaplicate din `database/migrations/` și inițializează snapshotul din browser numai dacă baza este goală. Nu șterge și nu înlocuiește un snapshot existent. După migrare, un profil Incognito nou preia automat datele de pe server.
 
@@ -37,7 +37,7 @@ Pentru o schimbare de schemă, adăugați un fișier SQL nou, de exemplu `databa
 - `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_API_VERSION`: WhatsApp Business Cloud API.
 - `WHATSAPP_TEMPLATE_NAME`, `WHATSAPP_TEMPLATE_LANGUAGE`: opțional, șablon WhatsApp aprobat.
 
-Pentru mesajele inițiate de firmă, WhatsApp poate cere un șablon aprobat. FleetOS raportează trimiterea ca reușită numai după ce API-ul WhatsApp returnează ID-ul mesajului; acceptarea API nu garantează livrarea sau citirea.
+Pentru mesajele inițiate de firmă, WhatsApp poate cere un șablon aprobat. Agenda raportează trimiterea ca reușită numai după ce API-ul WhatsApp returnează ID-ul mesajului; acceptarea API nu garantează livrarea sau citirea.
 
 ## Rulare locală fără Node.js
 
@@ -51,7 +51,7 @@ Deschideți `http://127.0.0.1:4173`. Pentru testarea pe telefon, folosiți un ho
 
 ## Date și backupuri
 
-Datele flotei sunt salvate ca snapshot JSON versionat în MySQL, iar fișierele atașate separat ca BLOB. MySQL este sursa centrală. Browserul păstrează doar o copie de lucru/cache pentru interfață și utilizarea temporară offline; după autentificare, datele se sincronizează automat. Sincronizarea oprește salvarea la conflict de versiune, pentru a nu suprascrie tacit modificările altui dispozitiv. Faceți backup atât din FleetOS, cât și prin instrumentele cPanel înainte de migrări sau actualizări.
+Datele flotei sunt salvate ca snapshot JSON versionat în MySQL, iar fișierele atașate separat ca BLOB. MySQL este sursa centrală. Browserul păstrează doar o copie de lucru/cache pentru interfață și utilizarea temporară offline; după autentificare, datele se sincronizează automat. Sincronizarea oprește salvarea la conflict de versiune, pentru a nu suprascrie tacit modificările altui dispozitiv. Faceți backup atât din Agenda, cât și prin instrumentele cPanel înainte de migrări sau actualizări.
 
 PWA poate păstra interfața cache-uită offline, dar autentificarea, MySQL, GPT, căutarea web și WhatsApp necesită conexiune. Ștergerea datelor browserului poate elimina copii locale nesincronizate.
 
