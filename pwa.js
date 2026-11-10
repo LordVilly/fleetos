@@ -8,9 +8,9 @@
 
   function panelHtml() {
     const installed = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-    const install = installed ? '<span class="badge good">Instalată pe acest dispozitiv</span>' : installPrompt ? '<button type="button" class="primary" onclick="FleetPwa.install()">Instalează FleetOS</button>' : '<span class="muted">Deschideți meniul browserului și alegeți «Instalează aplicația» sau «Adaugă pe ecranul principal».</span>';
+    const install = installed ? '<span class="badge good">Instalată pe acest dispozitiv</span>' : installPrompt ? '<button type="button" class="primary" onclick="FleetPwa.install()">Instalează Agenda</button>' : '<span class="muted">Deschideți meniul browserului și alegeți «Instalează aplicația» sau «Adaugă pe ecranul principal».</span>';
     const update = updateWaiting ? '<button type="button" onclick="FleetPwa.applyUpdate()">Aplică actualizarea</button>' : '';
-    return `<div class="panel"><div class="section-title"><div><h2>Instalare pe telefon și PC</h2><p class="muted">FleetOS poate fi instalat ca aplicație PWA de pe adresa HTTPS și folosește aceleași date MySQL după conectarea la server.</p></div></div><div class="toolbar">${install}${update}</div><p id="fleetPwaStatus" class="muted">${status}</p><p class="muted">Datele offline rămân locale până la sincronizare. GPT și WhatsApp necesită internet.</p></div>`;
+    return `<div class="panel"><div class="section-title"><div><h2>Instalare pe telefon și PC</h2><p class="muted">Agenda poate fi instalat ca aplicație PWA de pe adresa HTTPS și folosește aceleași date MySQL după conectarea la server.</p></div></div><div class="toolbar">${install}${update}</div><p id="fleetPwaStatus" class="muted">${status}</p><p class="muted">Datele offline rămân locale până la sincronizare. GPT și WhatsApp necesită internet.</p></div>`;
   }
 
   function refreshPanel() {
@@ -31,7 +31,7 @@
     }
     installPrompt.prompt();
     const result = await installPrompt.userChoice;
-    status = result.outcome === 'accepted' ? 'Instalarea FleetOS a fost acceptată.' : 'Instalarea a fost anulată.';
+    status = result.outcome === 'accepted' ? 'Instalarea Agenda a fost acceptată.' : 'Instalarea a fost anulată.';
     installPrompt = null;
     refreshPanel();
   }
@@ -45,7 +45,7 @@
   }
 
   async function initialize() {
-    if (!('serviceWorker' in navigator)) { status = 'Acest browser nu oferă service worker. FleetOS rămâne utilizabil online.'; refreshPanel(); return; }
+    if (!('serviceWorker' in navigator)) { status = 'Acest browser nu oferă service worker. Agenda rămâne utilizabil online.'; refreshPanel(); return; }
     if (!secure()) { status = 'Service worker și instalarea necesită HTTPS. Pentru test local folosiți localhost.'; refreshPanel(); return; }
     try {
       registration = await navigator.serviceWorker.register('sw.js', { scope: '/' });
@@ -62,7 +62,7 @@
   }
 
   window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; refreshPanel(); });
-  window.addEventListener('appinstalled', () => { status = 'FleetOS a fost instalată pe acest dispozitiv.'; installPrompt = null; refreshPanel(); });
+  window.addEventListener('appinstalled', () => { status = 'Agenda a fost instalată pe acest dispozitiv.'; installPrompt = null; refreshPanel(); });
   window.FleetPwa = { panelHtml, install, applyUpdate };
   window.FleetPwaReady?.();
   window.addEventListener('load', initialize, { once: true });
