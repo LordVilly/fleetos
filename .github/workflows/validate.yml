@@ -32,3 +32,5 @@ jobs:
           node --check pwa.js
           python3 -c "import re; h=open('index.html',encoding='utf-8').read(); s=re.search(r'<script>([\s\S]*?)</script>',h); assert s, 'inline app script not found'; open('/tmp/fleetos-inline.js','w',encoding='utf-8').write(s.group(1))"
           node --check /tmp/fleetos-inline.js
+      - name: Test cloud synchronization decisions
+        run: node --test tests/cloud-sync.test.cjs
