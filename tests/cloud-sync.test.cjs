@@ -214,3 +214,37 @@ test('empty central database is initialized from the device snapshot without rep
   assert.match(harness.messages.at(-1), /salvate în MySQL/);
 });
 
+test('first browser without a local snapshot loads the central fleet without uploading demo data', async () => {
+  const remoteState = state([{ id: 'central-42', name: 'Vehicul din MySQL', category: 'Utilaj' }]);
+  const harness = makeHarness({
+    local: state([{ id: 'demo-only', name: 'Date locale inițiale' }], { settings: { cloudSyncEnabled: false, cloudRevision: 0 } }),
+    remote: { revision: 42, state: remoteState },
+    hasSnapshot: false
+  });
+
+  await harness.cloud.bootstrap();
+
+  assert.deepEqual(harness.getLocal().vehicles.map(vehicle => vehicle.id), ['central-42']);
+  assert.equal(harness.calls.filter(call => call.method === 'PUT').length, 0);
+  assert.equal(harness.getLocal().settings.cloudRevision, 42);
+});
+
+test('reconciliation merges all supported record groups and leaves shared IDs server-authoritative', async () => {
+  const groups = ['parts', 'safety', 'orders', 'history', 'alerts', 'alertResolutions'];
+  const local = state([{ id: 'vehicle-1', name: 'Local vehicle' }], { settings: { cloudSyncEnabled: false, cloudRevision: 0 } });
+  const remote = state([{ id: 'vehicle-1', name: 'Server vehicle' }]);
+  for (const group of groups) {
+    local[group] = [{ id: `${group}-shared`, name: 'local version' }, { id: `${group}-local`, name: 'local only' }];
+    remote[group] = [{ id: `${group}-shared`, name: 'server version' }, { id: `${group}-server`, name: 'server only' }];
+  }
+  const harness = makeHarness({ local, remote: { revision: 7, state: remote } });
+
+  await harness.cloud.bootstrap();
+
+  const merged = harness.getRemote().state;
+  for (const group of groups) {
+    assert.deepEqual(merged[group].map(item => item.id), [`${group}-shared`, `${group}-server`, `${group}-local`]);
+    assert.equal(merged[group][0].name, 'server version');
+  }
+});
+
