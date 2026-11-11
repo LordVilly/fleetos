@@ -8,6 +8,21 @@
 
   const escapeHtml = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
   const token = () => window.FleetAuth?.isAuthenticated?.() ? 'session' : '';
+  const deviceRole = () => {
+    try {
+      const saved = localStorage.getItem('agendaSyncRole');
+      if (saved === 'phone' || saved === 'computer') return saved;
+    } catch {}
+    return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') ? 'phone' : 'computer';
+  };
+  function setDeviceRole(role) {
+    if (role !== 'phone' && role !== 'computer') return context?.notify('Alegeți Telefon principal sau Calculator.');
+    try { localStorage.setItem('agendaSyncRole', role); }
+    catch { return context?.notify('Rolul acestui dispozitiv nu a putut fi salvat în browser.'); }
+    context?.notify(role === 'phone' ? 'Acest dispozitiv este setat ca telefon principal.' : 'Acest dispozitiv este setat să încarce datele centrale.');
+    context?.render();
+    if (token()) bootstrap();
+  }
   function setStatus(message, good = false) {
     lastMessage = message;
     const badge = document.querySelector('#fleetCloudStatus');
@@ -41,6 +56,16 @@
       const serverRecords = Array.isArray(remote[key]) ? remote[key] : [];
       const phoneIds = new Set(phoneRecords.map(item => item?.id).filter(Boolean));
       merged[key] = [...phoneRecords, ...serverRecords.filter(item => !item?.id || !phoneIds.has(item.id))];
+    }
+    return merged;
+  }
+  function mergeServerAuthoritativeRecords(local, remote) {
+    const merged = { ...local, ...remote, settings: { ...(local.settings || {}), ...(remote.settings || {}) } };
+    for (const key of ['vehicles', 'parts', 'safety', 'orders', 'history', 'alerts', 'alertResolutions']) {
+      const serverRecords = Array.isArray(remote[key]) ? remote[key] : [];
+      const localRecords = Array.isArray(local[key]) ? local[key] : [];
+      const serverIds = new Set(serverRecords.map(item => item?.id).filter(Boolean));
+      merged[key] = [...serverRecords, ...localRecords.filter(item => !item?.id || !serverIds.has(item.id))];
     }
     return merged;
   }
@@ -147,12 +172,11 @@
       cloudRevision = Number(remote.revision || 0);
       const localRevision = Number(context.getState().settings.cloudRevision || 0);
       const serverChanged = Number(remote.revision || 0) !== localRevision;
-      if (context.getState().settings.cloudSyncEnabled && remote.state && cloudRevision === localRevision) schedule();
-      else if (context.getState().settings.cloudSyncEnabled && serverChanged) {
+      if (context.getState().settings.cloudSyncEnabled && serverChanged) {
         paused = true;
       }
       setStatus(context.getState().settings.cloudSyncEnabled && serverChanged ? 'Serverul s-a schimbat · încărcați versiunea serverului' : remote.state ? `Conectat · server revizia ${cloudRevision}` : 'Conectat · baza de date este goală', !(context.getState().settings.cloudSyncEnabled && serverChanged));
-      context.notify(remote.state ? 'Conexiunea la baza MySQL a reușit. Alegeți dacă încărcați datele serverului sau ale acestui dispozitiv.' : 'Conexiunea la MySQL a reușit. Baza este pregătită pentru primul upload.');
+      context.notify(remote.state ? `Conexiunea la MySQL a reușit. Acest dispozitiv este: ${deviceRole() === 'phone' ? 'telefon principal' : 'calculator'}; folosiți acțiunea de sincronizare în direcția indicată.` : deviceRole() === 'phone' ? 'Conexiunea la MySQL a reușit. Telefonul poate inițializa flota centrală.' : 'Conexiunea la MySQL a reușit. Așteptați inițializarea bazei de pe telefonul principal.');
     } catch (error) {
       setStatus('Conexiune indisponibilă');
       context.notify(error.message);
@@ -165,10 +189,16 @@
       const remote = await getRemote();
       const local = context.getState();
       const localRevision = Number(local.settings?.cloudRevision || 0);
+      const role = deviceRole();
       if (!remote.state) {
         if (!context.hasLocalSnapshot?.()) {
           setStatus('Baza centrală goală · așteaptă dispozitivul cu datele flotei');
-          context.notify('Baza MySQL este goală. Deschideți Agenda în browserul care conține flota inițială; acesta va publica datele pe server.');
+          context.notify(role === 'phone' ? 'Baza MySQL este goală. Telefonul principal poate publica flota inițială.' : 'Baza MySQL este goală. Deschideți aplicația pe telefonul principal pentru a publica flota.');
+          return;
+        }
+        if (role !== 'phone') {
+          setStatus('Așteaptă sincronizarea telefonului principal');
+          context.notify('Nu am inițializat baza de date din acest calculator. Deschideți Agenda pe telefonul cu flota și sincronizați de acolo.');
           return;
         }
         const revision = await sendState(local, Number(remote.revision || 0));
@@ -177,38 +207,6 @@
         paused = false;
         setStatus('Baza centrală inițializată', true);
         context.notify('Datele Agenda au fost salvate în MySQL. Acest server va fi folosit de dispozitivele conectate.');
-        return;
-      }
-      if (local.settings?.cloudSyncEnabled && localRevision === Number(remote.revision || 0)) {
-        paused = false;
-        setStatus('Conectat la baza centrală', true);
-        return;
-      }
-      if (local.settings?.cloudSyncEnabled) {
-        const counts = countReconciliationChanges(local, remote.state);
-        const total = Object.values(counts).reduce((sum, count) => sum + count.phoneOnly + count.phoneUpdated + count.serverOnly, 0);
-        if (total > 0) {
-          const details = Object.entries(counts).filter(([, count]) => count.phoneOnly + count.phoneUpdated + count.serverOnly > 0).map(([key, count]) => `${count.phoneOnly} noi de pe telefon, ${count.phoneUpdated} actualizate pe telefon, ${count.serverOnly} doar pe server (${key})`).join('; ');
-          if (!confirm(`Telefonul este sursa prioritară. Diferențe detectate: ${details}. Înainte de sincronizare se descarcă un backup complet al telefonului și un backup al serverului. Înregistrările cu același ID vor prelua versiunea telefonului; înregistrările care există doar pe server vor fi păstrate. Continuați?`)) {
-            paused = true;
-            setStatus('Sincronizare în așteptare · datele locale au fost păstrate');
-            context.notify('Datele locale au rămas pe dispozitiv. Reluați sincronizarea numai după ce decideți cum doriți să reconciliați diferențele.');
-            return;
-          }
-          await context.downloadFullBackup();
-          await context.downloadFullBackup(remote.state, 'server');
-          const merged = mergePhoneAuthoritativeRecords(local, remote.state);
-          const revision = await sendState(merged, Number(remote.revision || 0));
-          context.applyRemote(merged, revision);
-          await uploadPendingDocuments();
-          paused = false;
-          setStatus('Datele telefonului au fost sincronizate', true);
-          context.notify('Sincronizare reușită. Telefonul a avut prioritate pentru înregistrările comune; înregistrările unice de pe server au fost păstrate. Backupurile telefonului și serverului au fost descărcate.');
-          return;
-        }
-        paused = true;
-        setStatus('Conflict între dispozitive · sincronizare oprită');
-        context.notify('Serverul și acest dispozitiv au revizii diferite, dar nu există înregistrări locale noi care să poată fi unite automat în siguranță. Datele locale au fost păstrate; nu s-a trimis nicio modificare.');
         return;
       }
       // A browser with no prior Agenda save is a first-time device (including Incognito).
@@ -221,23 +219,46 @@
         context.notify('Flota a fost încărcată din baza de date centrală.');
         return;
       }
-      // Keep both copies before reconciling; the phone is authoritative for shared IDs.
       const counts = countReconciliationChanges(local, remote.state);
       const total = Object.values(counts).reduce((sum, count) => sum + count.phoneOnly + count.phoneUpdated + count.serverOnly, 0);
-      if (!confirm(`Există o copie locală a telefonului și o flotă pe server. Diferențe detectate: ${total} înregistrări. Înainte de sincronizare se descarcă backupul telefonului și backupul serverului. Telefonul este prioritar pentru ID-urile comune, iar înregistrările unice de pe server se păstrează. Continuați?`)) {
-        paused = true;
-        setStatus('Conectare în așteptare · datele locale au fost păstrate');
+      if (role === 'computer') {
+        if (total > 0 || localRevision !== Number(remote.revision || 0)) {
+          if (!confirm(`Acesta este calculatorul de lucru. Serverul este sursa centrală și are revizia ${remote.revision || 0}; copia locală are ${localRevision}. Se descarcă un backup al datelor locale, apoi calculatorul va încărca flota de pe server fără să trimită datele locale peste ea. Continuați?`)) {
+            paused = true;
+            setStatus('Încărcarea serverului este în așteptare');
+            context.notify('Datele locale au fost păstrate. Folosiți „Încarcă serverul” când doriți să actualizați calculatorul.');
+            return;
+          }
+          await context.downloadFullBackup(local, 'calculator');
+        }
+        context.applyRemote(remote.state, Number(remote.revision || 0));
+        await uploadPendingDocuments();
+        paused = false;
+        setStatus('Flota centrală este încărcată', true);
+        context.notify(total > 0 || localRevision !== Number(remote.revision || 0) ? 'Calculatorul a fost actualizat din server. Backupul local a fost descărcat.' : 'Calculatorul este sincronizat cu serverul.');
         return;
       }
-      await context.downloadFullBackup();
+      if (total === 0) {
+        context.applyRemote(remote.state, Number(remote.revision || 0));
+        paused = false;
+        setStatus('Telefonul este sincronizat cu serverul', true);
+        return;
+      }
+      const details = Object.entries(counts).filter(([, count]) => count.phoneOnly + count.phoneUpdated + count.serverOnly > 0).map(([key, count]) => `${count.phoneOnly} noi pe telefon, ${count.phoneUpdated} actualizate pe telefon, ${count.serverOnly} doar pe server (${key})`).join('; ');
+      if (!confirm(`Telefonul este sursa principală. Diferențe: ${details}. Se descarcă backupul telefonului și al serverului. Datele telefonului câștigă pentru același ID; înregistrările doar pe server se păstrează. Continuați?`)) {
+        paused = true;
+        setStatus('Sincronizare telefon în așteptare');
+        return;
+      }
+      await context.downloadFullBackup(local, 'telefon');
       await context.downloadFullBackup(remote.state, 'server');
       const merged = mergePhoneAuthoritativeRecords(local, remote.state);
       const revision = await sendState(merged, Number(remote.revision || 0));
       context.applyRemote(merged, revision);
       await uploadPendingDocuments();
       paused = false;
-      setStatus('Conectat la baza centrală', true);
-      context.notify('Datele telefonului au fost sincronizate. Telefonul a avut prioritate pentru înregistrările comune, cele unice de pe server au fost păstrate, iar backupurile telefonului și serverului au fost descărcate.');
+      setStatus('Telefonul este sincronizat cu serverul', true);
+      context.notify('Sincronizare reușită. Datele telefonului au avut prioritate, iar înregistrările unice de pe server au fost păstrate. Backupurile telefonului și serverului au fost descărcate.');
     } catch (error) {
       setStatus('Conexiune la baza centrală necesită atenție');
       context.notify('Nu am putut încărca datele centrale: ' + error.message);
@@ -304,15 +325,20 @@
   }
   async function syncToServer() {
     if (!token()) return context.notify('Conectați-vă mai întâi la serverul Agenda.');
+    if (deviceRole() !== 'phone') return context.notify('Acest calculator este configurat să preia datele de pe server. Pentru publicarea flotei, folosiți telefonul principal sau schimbați rolul dispozitivului.');
     try {
       const remote = await getRemote();
       let revision = Number(remote.revision || 0);
       let outgoing = context.getState();
-      if (remote.state && revision !== Number(context.getState().settings.cloudRevision || 0)) {
-        if (!confirm('Telefonul este sursa prioritară. Înainte de sincronizare se descarcă backupul telefonului și backupul serverului. Versiunea telefonului va avea prioritate pentru înregistrările cu același ID, iar înregistrările existente doar pe server vor fi păstrate. Continuați?')) return;
-        await context.downloadFullBackup();
-        await context.downloadFullBackup(remote.state, 'server');
-        outgoing = mergePhoneAuthoritativeRecords(context.getState(), remote.state);
+      if (remote.state) {
+        const counts = countReconciliationChanges(outgoing, remote.state);
+        const differences = Object.values(counts).reduce((sum, count) => sum + count.phoneOnly + count.phoneUpdated + count.serverOnly, 0);
+        if (differences > 0 && !confirm('Telefonul este sursa prioritară. Înainte de sincronizare se descarcă backupul telefonului și backupul serverului. Datele telefonului au prioritate pentru ID-urile comune, iar înregistrările doar de pe server se păstrează. Continuați?')) return;
+        if (differences > 0) {
+          await context.downloadFullBackup(outgoing, 'telefon');
+          await context.downloadFullBackup(remote.state, 'server');
+          outgoing = mergePhoneAuthoritativeRecords(outgoing, remote.state);
+        }
       }
       const nextRevision = await sendState(outgoing, revision);
       paused = false;
@@ -394,12 +420,13 @@
   }
   function panelHtml() {
     return `<div class="panel"><div class="section-title"><div><h2>Migrare / actualizare bază de date</h2><p class="muted">Creează tabelele lipsă, rulează fișierele SQL noi din database/migrations și inițializează MySQL numai dacă este gol. Nu înlocuiește date existente.</p></div><button id="fleetMigrateButton" class="primary" type="button" onclick="FleetCloud.migrateAndConnect()">Migrare / actualizare</button></div><p class="muted">Utilizatorul MySQL trebuie să aibă privilegiile CREATE și ALTER. Actualizările fișierelor aplicației se publică separat în cPanel.</p></div>`;
-  }  function init(value) { context = value; if (context.getState().settings?.cloudSyncEnabled && token()) schedule(); }
-  window.FleetCloud = { init, panelHtml, request, schedule, connect, bootstrap, migrateAndConnect, syncToServer, syncForExit, syncFromServer, downloadDocument, deleteDocument, fullBackup };
+  }
+  function init(value) { context = value; setTimeout(() => { if (token()) bootstrap(); }, 0); }
+  window.FleetCloud = { init, panelHtml, request, schedule, connect, bootstrap, migrateAndConnect, syncToServer, syncForExit, syncFromServer, downloadDocument, deleteDocument, fullBackup, deviceRole, setDeviceRole };
   window.FleetCloudReady?.();
-  window.addEventListener('online', schedule);
   window.addEventListener('online', () => { if (token()) bootstrap(); });
   window.setInterval(checkRemoteRevision, 30000);
   window.addEventListener('focus', checkRemoteRevision);
 })();
+
 
