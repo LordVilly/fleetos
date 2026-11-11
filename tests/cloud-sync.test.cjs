@@ -19,7 +19,8 @@ function response(data, status = 200) {
     statusText: status === 200 ? 'OK' : 'Conflict',
     headers: { get: () => 'application/json' },
     json: async () => data,
-    text: async () => JSON.stringify(data)
+    text: async () => JSON.stringify(data),
+    blob: async () => new Blob(['test document'], { type: 'text/plain' })
   };
 }
 
@@ -30,6 +31,7 @@ function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult
   const calls = [];
   const messages = [];
   const timeline = [];
+  const backups = [];
   let confirmCalls = 0;
 
   async function fakeFetch(url, options = {}) {
@@ -48,6 +50,7 @@ function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult
       timeline.push('put');
       return response({ revision: remoteRevision });
     }
+    if (url.startsWith('/api/documents?id=') && method === 'GET') return response({ ok: true });
     throw new Error(`Unexpected request: ${method} ${url}`);
   }
 
@@ -91,6 +94,8 @@ function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult
     fetch: fakeFetch,
     Headers,
     URLSearchParams,
+    Blob,
+    btoa,
     confirm() { confirmCalls += 1; timeline.push('confirm'); return confirmResult; },
     setTimeout() { return 1; },
     clearTimeout() {},
@@ -115,7 +120,7 @@ function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult
       local.settings.cloudRevision = Number(revision);
       timeline.push('apply');
     },
-    async downloadFullBackup() { timeline.push('backup'); return { format: 'test-backup' }; }
+    async downloadFullBackup(snapshot, label) { timeline.push(`backup:${label || 'local'}`); backups.push({ snapshot, label }); return { format: 'test-backup' }; }
   });
 
   return {
@@ -123,6 +128,7 @@ function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult
     calls,
     messages,
     timeline,
+    backups,
     getLocal: () => local,
     getRemote: () => ({ revision: remoteRevision, state: remoteState }),
     getConfirmCalls: () => confirmCalls
@@ -138,7 +144,7 @@ function state(vehicles, extra = {}) {
   };
 }
 
-test('bootstrap merges local-only utility records after backup and keeps server version for shared IDs', async () => {
+test('bootstrap merges phone records after backup, with the phone version winning shared IDs', async () => {
   const local = state([
     { id: 'shared-1', name: 'Nume vechi pe telefon', category: 'Autoturism' },
     { id: 'utility-local', name: 'Utilaj păstrat pe telefon', category: 'Utilaj' }
@@ -155,13 +161,13 @@ test('bootstrap merges local-only utility records after backup and keeps server 
   await harness.cloud.bootstrap();
 
   const uploaded = harness.getRemote().state;
-  assert.deepEqual(uploaded.vehicles.map(vehicle => vehicle.id), ['shared-1', 'server-1', 'utility-local']);
-  assert.equal(uploaded.vehicles.find(vehicle => vehicle.id === 'shared-1').name, 'Nume central');
+  assert.deepEqual(uploaded.vehicles.map(vehicle => vehicle.id), ['shared-1', 'utility-local', 'server-1']);
+  assert.equal(uploaded.vehicles.find(vehicle => vehicle.id === 'shared-1').name, 'Nume vechi pe telefon');
   assert.equal(uploaded.vehicles.find(vehicle => vehicle.id === 'utility-local').category, 'Utilaj');
-  assert.deepEqual(harness.timeline, ['confirm', 'backup', 'put', 'apply']);
+  assert.deepEqual(harness.timeline, ['confirm', 'backup:local', 'backup:server', 'put', 'apply']);
   assert.equal(harness.getRemote().revision, 534);
   assert.equal(harness.getLocal().settings.cloudSyncEnabled, true);
-  assert.match(harness.messages.at(-1), /au fost adăugate/);
+  assert.match(harness.messages.at(-1), /Telefonul a avut prioritate/);
 });
 
 test('declining reconciliation preserves local data and sends no write request', async () => {
@@ -229,7 +235,7 @@ test('first browser without a local snapshot loads the central fleet without upl
   assert.equal(harness.getLocal().settings.cloudRevision, 42);
 });
 
-test('reconciliation merges all supported record groups and leaves shared IDs server-authoritative', async () => {
+test('reconciliation merges all supported record groups and keeps phone versions for shared IDs', async () => {
   const groups = ['parts', 'safety', 'orders', 'history', 'alerts', 'alertResolutions'];
   const local = state([{ id: 'vehicle-1', name: 'Local vehicle' }], { settings: { cloudSyncEnabled: false, cloudRevision: 0 } });
   const remote = state([{ id: 'vehicle-1', name: 'Server vehicle' }]);
@@ -243,8 +249,46 @@ test('reconciliation merges all supported record groups and leaves shared IDs se
 
   const merged = harness.getRemote().state;
   for (const group of groups) {
-    assert.deepEqual(merged[group].map(item => item.id), [`${group}-shared`, `${group}-server`, `${group}-local`]);
-    assert.equal(merged[group][0].name, 'server version');
+    assert.deepEqual(merged[group].map(item => item.id), [`${group}-shared`, `${group}-local`, `${group}-server`]);
+    assert.equal(merged[group][0].name, 'local version');
   }
+});
+
+test('same-ID phone edits trigger reconciliation and are uploaded only after confirmation and backups', async () => {
+  const local = state([{ id: 'shared-1', name: 'Corect pe telefon' }], { settings: { cloudSyncEnabled: true, cloudRevision: 12 } });
+  const remote = { revision: 13, state: state([{ id: 'shared-1', name: 'Vechi pe server' }]) };
+  const harness = makeHarness({ local, remote });
+
+  await harness.cloud.bootstrap();
+
+  assert.equal(harness.getRemote().state.vehicles[0].name, 'Corect pe telefon');
+  assert.deepEqual(harness.timeline, ['confirm', 'backup:local', 'backup:server', 'put', 'apply']);
+  assert.equal(harness.backups[1].snapshot.vehicles[0].name, 'Vechi pe server');
+});
+
+test('full backup includes document binaries referenced by the server snapshot', async () => {
+  const serverState = state([{ id: 'vehicle-1', name: 'Vehicle', documents: [{ id: 'doc-1', name: 'manual.txt' }] }]);
+  const harness = makeHarness({ local: state([], { settings: {} }), remote: { revision: 1, state: serverState } });
+
+  const backup = await harness.cloud.fullBackup(serverState);
+
+  assert.equal(backup.state.vehicles[0].documents[0].id, 'doc-1');
+  assert.equal(backup.documents[0].id, 'doc-1');
+  assert.equal(backup.documents[0].name, 'manual.txt');
+  assert.ok(backup.documents[0].dataBase64.length > 0);
+});
+
+test('manual phone-to-server sync retains server-only records and confirms before replacing shared IDs', async () => {
+  const local = state([{ id: 'shared', name: 'Telefon corect' }, { id: 'phone-only', name: 'Telefon nou' }], {
+    settings: { cloudSyncEnabled: true, cloudRevision: 2 }
+  });
+  const remote = { revision: 3, state: state([{ id: 'shared', name: 'Server vechi' }, { id: 'server-only', name: 'Server unic' }]) };
+  const harness = makeHarness({ local, remote });
+
+  await harness.cloud.syncToServer();
+
+  assert.deepEqual(harness.getRemote().state.vehicles.map(vehicle => vehicle.id), ['shared', 'phone-only', 'server-only']);
+  assert.equal(harness.getRemote().state.vehicles[0].name, 'Telefon corect');
+  assert.deepEqual(harness.timeline, ['confirm', 'backup:local', 'backup:server', 'put', 'apply']);
 });
 
