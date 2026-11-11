@@ -223,10 +223,69 @@ if ($route === 'vehicle/investigate' && $method === 'POST') fleetos_investigate(
 if ($route === 'whatsapp/send' && $method === 'POST') fleetos_whatsapp();
 if ($route === 'migrate' && $method === 'POST') fleetos_apply_migrations(fleetos_body());
 
-if (!in_array($route, ['state','documents'], true)) fleetos_json(['error'=>'Endpoint necunoscut: '.$route],404);
-if (($route === 'state' && !in_array($method,['GET','PUT'],true)) || ($route === 'documents' && !in_array($method,['GET','POST','DELETE'],true))) fleetos_json(['error'=>'Metodă neacceptată.'],405);
+if (!in_array($route, ['state','documents','backups'], true)) fleetos_json(['error'=>'Endpoint necunoscut: '.$route],404);
+if (($route === 'state' && !in_array($method,['GET','PUT'],true)) || ($route === 'documents' && !in_array($method,['GET','POST','DELETE'],true)) || ($route === 'backups' && !in_array($method,['GET','POST'],true))) fleetos_json(['error'=>'Metodă neacceptată.'],405);
 
 $pdo = fleetos_db();
+
+if ($route === 'backups' && $method === 'GET') {
+    try {
+        $id = (string)($_GET['id'] ?? '');
+        if ($id !== '') {
+            $statement = $pdo->prepare('SELECT backup_id, source_device, server_revision, device_revision, server_payload, device_payload, created_at FROM fleetos_backups WHERE backup_id = ?');
+            $statement->execute([$id]);
+            $row = $statement->fetch();
+            if (!$row) fleetos_json(['error' => 'Backupul nu a fost găsit.'], 404);
+            fleetos_json(['backup' => [
+                'id' => (int)$row['backup_id'],
+                'source' => $row['source_device'],
+                'serverRevision' => (int)$row['server_revision'],
+                'deviceRevision' => (int)$row['device_revision'],
+                'createdAt' => $row['created_at'],
+                'serverState' => $row['server_payload'] === null ? null : json_decode($row['server_payload'], true),
+                'deviceState' => json_decode($row['device_payload'], true)
+            ]]);
+        }
+        $rows = $pdo->query('SELECT backup_id, source_device, server_revision, device_revision, created_at FROM fleetos_backups ORDER BY backup_id DESC LIMIT 30')->fetchAll();
+        fleetos_json(['backups' => array_map(static fn(array $row): array => [
+            'id' => (int)$row['backup_id'],
+            'source' => $row['source_device'],
+            'serverRevision' => (int)$row['server_revision'],
+            'deviceRevision' => (int)$row['device_revision'],
+            'createdAt' => $row['created_at']
+        ], $rows)]);
+    } catch (PDOException $error) {
+        error_log('Agenda automatic backup list failed: ' . $error->getMessage());
+        if ((string)$error->getCode() === '42S02') fleetos_json(['error'=>'Tabelul de backup lipsește. Apăsați Setări → Migrare / actualizare bază de date.'],503);
+        fleetos_json(['error'=>'Nu s-au putut citi backupurile automate. Verificați schema și jurnalul PHP al hostingului.'],503);
+    }
+}
+if ($route === 'backups' && $method === 'POST') {
+    $body = fleetos_body();
+    if (!isset($body['state']) || !is_array($body['state'])) fleetos_json(['error'=>'Lipsesc datele flotei pentru backup.'],400);
+    $source = (string)($body['source'] ?? 'phone');
+    if (!in_array($source, ['phone','computer','calculator','local'], true)) $source = 'phone';
+    $deviceRevision = is_numeric($body['revision'] ?? null) ? (int)$body['revision'] : 0;
+    $devicePayload = json_encode($body['state'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($devicePayload === false || strlen($devicePayload) > 30000000) fleetos_json(['error'=>'Backupul depășește limita de 30 MB.'],413);
+    try {
+        $pdo->beginTransaction();
+        $pdo->query('INSERT IGNORE INTO fleetos_state (state_id, revision, payload) VALUES (1, 0, "{}")');
+        $row = $pdo->query('SELECT revision, payload FROM fleetos_state WHERE state_id = 1 FOR UPDATE')->fetch();
+        if (!$row) throw new RuntimeException('Nu s-a putut citi versiunea centrală pentru backup.');
+        $statement = $pdo->prepare('INSERT INTO fleetos_backups (source_device, server_revision, device_revision, server_payload, device_payload) VALUES (?, ?, ?, ?, ?)');
+        $statement->execute([$source, (int)$row['revision'], $deviceRevision, $row['payload'], $devicePayload]);
+        $backupId = (int)$pdo->lastInsertId();
+        $pdo->exec('DELETE FROM fleetos_backups WHERE backup_id NOT IN (SELECT backup_id FROM (SELECT backup_id FROM fleetos_backups ORDER BY backup_id DESC LIMIT 30) AS recent_backups)');
+        $pdo->commit();
+        fleetos_json(['ok'=>true, 'backupId'=>$backupId]);
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        error_log('Agenda automatic backup failed: ' . $error->getMessage());
+        if ($error instanceof PDOException && (string)$error->getCode() === '42S02') fleetos_json(['error'=>'Tabelele de backup lipsesc. Rulați Setări → Migrare / actualizare bază de date înainte de sincronizare.'],503);
+        fleetos_json(['error'=>'Backupul automat pe server a eșuat. Sincronizarea a fost oprită, iar datele locale au fost păstrate.'],503);
+    }
+}
 
 if ($route === 'state' && $method === 'GET') {
     try {
