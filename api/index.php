@@ -31,9 +31,11 @@ function fleetos_apply_migrations(array $body): never {
     $applied = [];
     $response = null;
     $failure = null;
+    $stage = 'obținerea blocării de migrare';
     try {
         $locked = (int)$pdo->query("SELECT GET_LOCK('{$lockName}', 15)")->fetchColumn() === 1;
         if (!$locked) throw new RuntimeException('Migrarea este deja în curs pe altă cerere. Reîncercați în câteva secunde.');
+        $stage = 'crearea tabelului de evidență a migrărilor';
         $pdo->exec("CREATE TABLE IF NOT EXISTS fleetos_migrations (version VARCHAR(190) NOT NULL PRIMARY KEY, checksum CHAR(64) NOT NULL, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, applied_by VARCHAR(120) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
         $files = ['0001_initial_schema' => dirname(__DIR__) . '/database/schema.sql'];
@@ -45,6 +47,7 @@ function fleetos_apply_migrations(array $body): never {
         $lookup = $pdo->prepare('SELECT checksum FROM fleetos_migrations WHERE version = ?');
         $record = $pdo->prepare('INSERT INTO fleetos_migrations (version, checksum, applied_by) VALUES (?, ?, ?)');
         foreach ($files as $version => $file) {
+            $stage = 'citirea migrării ' . $version;
             $sql = file_get_contents($file);
             if ($sql === false) throw new RuntimeException('Nu am putut citi migrarea ' . $version . '.');
             $sql = str_replace(["\r\n", "\r"], "\n", $sql);
@@ -56,6 +59,7 @@ function fleetos_apply_migrations(array $body): never {
                 continue;
             }
             $sql = preg_replace('/^\s*--.*$/m', '', $sql) ?? $sql;
+            $stage = 'aplicarea migrării ' . $version;
             foreach (explode(';', $sql) as $statement) {
                 $statement = trim($statement);
                 if ($statement !== '') $pdo->exec($statement);
@@ -64,6 +68,7 @@ function fleetos_apply_migrations(array $body): never {
             $applied[] = $version;
         }
 
+        $stage = 'inițializarea snapshotului flotei';
         $stateInserted = false;
         if ($payload !== null) {
             $pdo->beginTransaction();
@@ -76,8 +81,17 @@ function fleetos_apply_migrations(array $body): never {
         $response = ['ok'=>true,'applied'=>$applied,'schemaVersion'=>array_key_last($files),'stateInserted'=>$stateInserted,'stateExists'=>(bool)$row,'revision'=>(int)($row['revision']??0),'message'=>$applied ? 'Migrațiile bazei de date au fost aplicate.' : 'Baza de date este deja la zi.'];
     } catch (Throwable $error) {
         if ($pdo->inTransaction()) $pdo->rollBack();
-        error_log('Agenda migration failed: ' . $error->getMessage());
-        $failure = $error instanceof RuntimeException && str_starts_with($error->getMessage(),'Migrarea este deja în curs') ? $error->getMessage() : 'Migrarea bazei a eșuat. Verificați privilegiile CREATE/ALTER ale utilizatorului MySQL și jurnalul PHP al hostingului. Datele existente nu au fost suprascrise.';
+        error_log('Agenda migration failed at ' . $stage . ': ' . $error->getMessage());
+        if ($error instanceof RuntimeException && str_starts_with($error->getMessage(),'Migrarea este deja în curs')) {
+            $failure = $error->getMessage();
+        } elseif ($error instanceof PDOException) {
+            $info = $error->errorInfo ?? [];
+            $sqlState = (string)($info[0] ?? $error->getCode());
+            $driverCode = (string)($info[1] ?? '');
+            $failure = 'Migrarea a eșuat la etapa „' . $stage . '” (SQLSTATE ' . ($sqlState !== '' ? $sqlState : 'necunoscut') . ($driverCode !== '' ? '; cod MySQL ' . $driverCode : '') . '). Verificați privilegiile CREATE/ALTER/INDEX și jurnalul PHP din cPanel. Datele existente nu au fost înlocuite.';
+        } else {
+            $failure = 'Migrarea a eșuat la etapa „' . $stage . '”. Verificați jurnalul PHP din cPanel. Datele existente nu au fost înlocuite.';
+        }
     } finally {
         if ($locked) { try { $pdo->query("SELECT RELEASE_LOCK('{$lockName}')"); } catch (Throwable $ignored) {} }
     }
