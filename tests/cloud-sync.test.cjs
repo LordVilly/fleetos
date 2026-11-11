@@ -24,7 +24,7 @@ function response(data, status = 200) {
   };
 }
 
-function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult = true, hasSnapshot = true }) {
+function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult = true, hasSnapshot = true, role = 'phone' }) {
   let local = clone(initialLocal);
   let remoteState = initialRemote.state ? clone(initialRemote.state) : null;
   let remoteRevision = initialRemote.revision || 0;
@@ -85,11 +85,13 @@ function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult
     addEventListener() {},
     setInterval() { return 1; }
   };
+  const localStorage = { getItem(key) { return key === 'agendaSyncRole' ? role : null; }, setItem() {} };
   const document = { querySelector() { return null; } };
   const sandbox = {
     window,
     document,
-    navigator: { onLine: true },
+    navigator: { onLine: true, userAgent: role === 'phone' ? 'Android' : 'Windows' },
+    localStorage,
     indexedDB: fakeIndexedDB,
     fetch: fakeFetch,
     Headers,
@@ -164,10 +166,10 @@ test('bootstrap merges phone records after backup, with the phone version winnin
   assert.deepEqual(uploaded.vehicles.map(vehicle => vehicle.id), ['shared-1', 'utility-local', 'server-1']);
   assert.equal(uploaded.vehicles.find(vehicle => vehicle.id === 'shared-1').name, 'Nume vechi pe telefon');
   assert.equal(uploaded.vehicles.find(vehicle => vehicle.id === 'utility-local').category, 'Utilaj');
-  assert.deepEqual(harness.timeline, ['confirm', 'backup:local', 'backup:server', 'put', 'apply']);
+  assert.deepEqual(harness.timeline, ['confirm', 'backup:telefon', 'backup:server', 'put', 'apply']);
   assert.equal(harness.getRemote().revision, 534);
   assert.equal(harness.getLocal().settings.cloudSyncEnabled, true);
-  assert.match(harness.messages.at(-1), /Telefonul a avut prioritate/);
+  assert.match(harness.messages.at(-1), /Datele telefonului au avut prioritate/);
 });
 
 test('declining reconciliation preserves local data and sends no write request', async () => {
@@ -189,7 +191,7 @@ test('declining reconciliation preserves local data and sends no write request',
   assert.equal(harness.getLocal().settings.cloudSyncEnabled, false);
 });
 
-test('stale synced device pauses on conflict when there are no unique records to merge', async () => {
+test('phone with no data differences adopts the newer central revision without uploading', async () => {
   const shared = { id: 'shared-1', name: 'Vehicul comun', category: 'Autoturism' };
   const local = state([shared], { settings: { cloudSyncEnabled: true, cloudRevision: 4 } });
   const harness = makeHarness({
@@ -200,9 +202,8 @@ test('stale synced device pauses on conflict when there are no unique records to
   await harness.cloud.bootstrap();
 
   assert.equal(harness.calls.filter(call => call.method === 'PUT').length, 0);
-  assert.equal(harness.timeline.includes('apply'), false);
-  assert.equal(harness.getLocal().settings.cloudRevision, 4);
-  assert.match(harness.messages.at(-1), /nu există înregistrări locale noi/);
+  assert.equal(harness.timeline.includes('apply'), true);
+  assert.equal(harness.getLocal().settings.cloudRevision, 5);
 });
 
 test('empty central database is initialized from the device snapshot without replacing existing data', async () => {
@@ -235,6 +236,52 @@ test('first browser without a local snapshot loads the central fleet without upl
   assert.equal(harness.getLocal().settings.cloudRevision, 42);
 });
 
+test('work computer replaces a 31-vehicle local snapshot with all 69 central vehicles', async () => {
+  const localVehicles = Array.from({ length: 31 }, (_, index) => ({ id: `vehicle-${index + 1}`, name: `old-${index + 1}` }));
+  const centralVehicles = Array.from({ length: 69 }, (_, index) => ({ id: `vehicle-${index + 1}`, name: `central-${index + 1}` }));
+  const harness = makeHarness({
+    local: state(localVehicles, { settings: { cloudSyncEnabled: true, cloudRevision: 10 } }),
+    remote: { revision: 12, state: state(centralVehicles) },
+    role: 'computer'
+  });
+
+  await harness.cloud.bootstrap();
+
+  assert.equal(harness.getLocal().vehicles.length, 69);
+  assert.equal(harness.getLocal().vehicles[0].name, 'central-1');
+  assert.equal(harness.getLocal().settings.cloudRevision, 12);
+  assert.equal(harness.calls.filter(call => call.method === 'PUT').length, 0);
+  assert.deepEqual(harness.timeline, ['confirm', 'backup:calculator', 'apply']);
+});
+
+test('work computer cannot publish its local snapshot to the central database', async () => {
+  const harness = makeHarness({
+    local: state([{ id: 'pc-only', name: 'Local PC data' }], { settings: { cloudSyncEnabled: true, cloudRevision: 3 } }),
+    remote: { revision: 4, state: state([{ id: 'server', name: 'Central data' }]) },
+    role: 'computer'
+  });
+
+  await harness.cloud.syncToServer();
+
+  assert.equal(harness.calls.filter(call => call.method === 'PUT').length, 0);
+  assert.equal(harness.getRemote().state.vehicles[0].id, 'server');
+  assert.match(harness.messages.at(-1), /configurat să preia/);
+});
+
+test('computer never initializes an empty central database from its local snapshot', async () => {
+  const harness = makeHarness({
+    local: state([{ id: 'pc-data', name: 'Local PC' }], { settings: { cloudSyncEnabled: false, cloudRevision: 0 } }),
+    remote: { revision: 0, state: null },
+    role: 'computer'
+  });
+
+  await harness.cloud.bootstrap();
+
+  assert.equal(harness.calls.filter(call => call.method === 'PUT').length, 0);
+  assert.equal(harness.getRemote().state, null);
+  assert.match(harness.messages.at(-1), /nu am inițializat baza de date din acest calculator/i);
+});
+
 test('reconciliation merges all supported record groups and keeps phone versions for shared IDs', async () => {
   const groups = ['parts', 'safety', 'orders', 'history', 'alerts', 'alertResolutions'];
   const local = state([{ id: 'vehicle-1', name: 'Local vehicle' }], { settings: { cloudSyncEnabled: false, cloudRevision: 0 } });
@@ -262,7 +309,7 @@ test('same-ID phone edits trigger reconciliation and are uploaded only after con
   await harness.cloud.bootstrap();
 
   assert.equal(harness.getRemote().state.vehicles[0].name, 'Corect pe telefon');
-  assert.deepEqual(harness.timeline, ['confirm', 'backup:local', 'backup:server', 'put', 'apply']);
+  assert.deepEqual(harness.timeline, ['confirm', 'backup:telefon', 'backup:server', 'put', 'apply']);
   assert.equal(harness.backups[1].snapshot.vehicles[0].name, 'Vechi pe server');
 });
 
@@ -289,6 +336,18 @@ test('manual phone-to-server sync retains server-only records and confirms befor
 
   assert.deepEqual(harness.getRemote().state.vehicles.map(vehicle => vehicle.id), ['shared', 'phone-only', 'server-only']);
   assert.equal(harness.getRemote().state.vehicles[0].name, 'Telefon corect');
-  assert.deepEqual(harness.timeline, ['confirm', 'backup:local', 'backup:server', 'put', 'apply']);
+  assert.deepEqual(harness.timeline, ['confirm', 'backup:telefon', 'backup:server', 'put', 'apply']);
+});
+
+test('manual phone sync still uploads local edits when the stored revision matches the server', async () => {
+  const local = state([{ id: 'vehicle-1', name: 'Updated on phone' }], { settings: { cloudSyncEnabled: true, cloudRevision: 8 } });
+  const remote = { revision: 8, state: state([{ id: 'vehicle-1', name: 'Old central name' }]) };
+  const harness = makeHarness({ local, remote });
+
+  await harness.cloud.syncToServer();
+
+  assert.equal(harness.getRemote().state.vehicles[0].name, 'Updated on phone');
+  assert.equal(harness.getRemote().revision, 9);
+  assert.deepEqual(harness.timeline, ['confirm', 'backup:telefon', 'backup:server', 'put', 'apply']);
 });
 
