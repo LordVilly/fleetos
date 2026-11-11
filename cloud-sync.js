@@ -85,6 +85,7 @@
     return counts;
   }
   async function sendState(state, revision) {
+    await createAutomaticBackup(state, deviceRole());
     const response = await request('/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state, revision }) });
     const data = await response.json().catch(() => ({}));
     if (response.status === 409) {
@@ -143,8 +144,69 @@
       await putLocalDocument(document);
     }
   }
+  async function saveLocalBackupSnapshot(state, source = 'local') {
+    const serialized = JSON.stringify(state);
+    if (serialized.length > 30000000) throw new Error('Backupul local depășește limita de 30 MB și nu a putut fi salvat în siguranță.');
+    const requestDb = indexedDB.open('agenda-automatic-backups', 1);
+    const db = await new Promise((resolve, reject) => {
+      requestDb.onupgradeneeded = () => {
+        const database = requestDb.result;
+        if (!database.objectStoreNames.contains('snapshots')) database.createObjectStore('snapshots', { keyPath: 'id' });
+      };
+      requestDb.onsuccess = () => resolve(requestDb.result);
+      requestDb.onerror = () => reject(requestDb.error || new Error('Nu s-a putut deschide arhiva locală de backup.'));
+    });
+    const record = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, createdAt: new Date().toISOString(), source, state: JSON.parse(serialized) };
+    try {
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction('snapshots', 'readwrite');
+        tx.objectStore('snapshots').put(record);
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error || new Error('Backupul local nu a putut fi scris.'));
+        tx.onabort = () => reject(tx.error || new Error('Salvarea backupului local a fost anulată.'));
+      });
+      const records = await new Promise((resolve, reject) => {
+        const tx = db.transaction('snapshots', 'readonly');
+        const req = tx.objectStore('snapshots').getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => reject(req.error || new Error('Nu s-a putut verifica arhiva locală de backup.'));
+      });
+      records.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+      const obsolete = records.slice(20).map(item => item.id);
+      if (obsolete.length) await new Promise((resolve, reject) => {
+        const tx = db.transaction('snapshots', 'readwrite');
+        const store = tx.objectStore('snapshots');
+        obsolete.forEach(id => store.delete(id));
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error || new Error('Nu s-au putut curăța backupurile locale vechi.'));
+      });
+      return record;
+    } finally { db.close(); }
+  }
+  let localBackupTimer = null;
+  function scheduleLocalBackupSnapshot(state) {
+    clearTimeout(localBackupTimer);
+    const snapshot = JSON.parse(JSON.stringify(state));
+    localBackupTimer = setTimeout(() => {
+      saveLocalBackupSnapshot(snapshot, 'autosave').catch(error => {
+        setStatus('Backupul local necesită atenție');
+        context?.notify('Datele sunt salvate în aplicație, dar copia automată locală nu a reușit: ' + error.message);
+      });
+    }, 1200);
+  }
+  async function createAutomaticBackup(state, source = deviceRole()) {
+    await saveLocalBackupSnapshot(state, source);
+    const response = await request('/api/backups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state, source, revision: Number(state.settings?.cloudRevision || 0) })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Backupul automat nu a fost confirmat de server. Sincronizarea a fost oprită pentru protejarea datelor.');
+    return data;
+  }
   async function flush() {
-    if (!context || busy || paused || !token() || !context.getState().settings?.cloudSyncEnabled || !navigator.onLine) return;
+    if (!context || busy || paused || deviceRole() !== 'phone' || !token() || !context.getState().settings?.cloudSyncEnabled || !navigator.onLine) return;
     busy = true;
     setStatus('Se sincronizează…');
     try {
@@ -223,13 +285,13 @@
       const total = Object.values(counts).reduce((sum, count) => sum + count.phoneOnly + count.phoneUpdated + count.serverOnly, 0);
       if (role === 'computer') {
         if (total > 0 || localRevision !== Number(remote.revision || 0)) {
-          if (!confirm(`Acesta este calculatorul de lucru. Serverul este sursa centrală și are revizia ${remote.revision || 0}; copia locală are ${localRevision}. Se descarcă un backup al datelor locale, apoi calculatorul va încărca flota de pe server fără să trimită datele locale peste ea. Continuați?`)) {
+          if (!confirm(`Acesta este calculatorul de lucru. Serverul este sursa centrală și are revizia ${remote.revision || 0}; copia locală are ${localRevision}. Copia locală va fi salvată automat în arhiva dispozitivului, apoi calculatorul va încărca flota de pe server fără să trimită datele locale peste ea. Continuați?`)) {
             paused = true;
             setStatus('Încărcarea serverului este în așteptare');
             context.notify('Datele locale au fost păstrate. Folosiți „Încarcă serverul” când doriți să actualizați calculatorul.');
             return;
           }
-          await context.downloadFullBackup(local, 'calculator');
+          await saveLocalBackupSnapshot(local, 'calculator');
         }
         context.applyRemote(remote.state, Number(remote.revision || 0));
         await uploadPendingDocuments();
@@ -245,13 +307,11 @@
         return;
       }
       const details = Object.entries(counts).filter(([, count]) => count.phoneOnly + count.phoneUpdated + count.serverOnly > 0).map(([key, count]) => `${count.phoneOnly} noi pe telefon, ${count.phoneUpdated} actualizate pe telefon, ${count.serverOnly} doar pe server (${key})`).join('; ');
-      if (!confirm(`Telefonul este sursa principală. Diferențe: ${details}. Se descarcă backupul telefonului și al serverului. Datele telefonului câștigă pentru același ID; înregistrările doar pe server se păstrează. Continuați?`)) {
+      if (!confirm(`Telefonul este sursa principală. Diferențe: ${details}. Aplicația salvează automat copii recuperabile pe telefon și pe server înaintea sincronizării. Datele telefonului câștigă pentru același ID; înregistrările doar pe server se păstrează. Continuați?`)) {
         paused = true;
         setStatus('Sincronizare telefon în așteptare');
         return;
       }
-      await context.downloadFullBackup(local, 'telefon');
-      await context.downloadFullBackup(remote.state, 'server');
       const merged = mergePhoneAuthoritativeRecords(local, remote.state);
       const revision = await sendState(merged, Number(remote.revision || 0));
       context.applyRemote(merged, revision);
@@ -333,10 +393,8 @@
       if (remote.state) {
         const counts = countReconciliationChanges(outgoing, remote.state);
         const differences = Object.values(counts).reduce((sum, count) => sum + count.phoneOnly + count.phoneUpdated + count.serverOnly, 0);
-        if (differences > 0 && !confirm('Telefonul este sursa prioritară. Înainte de sincronizare se descarcă backupul telefonului și backupul serverului. Datele telefonului au prioritate pentru ID-urile comune, iar înregistrările doar de pe server se păstrează. Continuați?')) return;
+        if (differences > 0 && !confirm('Telefonul este sursa prioritară. Aplicația salvează automat copii recuperabile pe telefon și pe server înaintea sincronizării. Datele telefonului au prioritate pentru ID-urile comune, iar înregistrările doar de pe server se păstrează. Continuați?')) return;
         if (differences > 0) {
-          await context.downloadFullBackup(outgoing, 'telefon');
-          await context.downloadFullBackup(remote.state, 'server');
           outgoing = mergePhoneAuthoritativeRecords(outgoing, remote.state);
         }
       }
@@ -356,8 +414,8 @@
     try {
       const remote = await getRemote();
       if (!remote.state) return context.notify('Baza de date nu conține încă o flotă. Încărcați datele de pe dispozitivul inițial.');
-      if (!confirm('Datele locale de pe acest dispozitiv vor fi înlocuite cu versiunea din server. Se va descărca mai întâi un backup local complet. Continuați?')) return;
-      await context.downloadFullBackup();
+      if (!confirm('Datele locale de pe acest dispozitiv vor fi înlocuite cu versiunea din server. Se creează automat o copie locală recuperabilă înainte de înlocuire. Continuați?')) return;
+      await saveLocalBackupSnapshot(context.getState(), deviceRole());
       context.applyRemote(remote.state, Number(remote.revision || 0));
       paused = false;
       setStatus('Sincronizat cu serverul', true);
@@ -418,11 +476,17 @@
     }
     return { format: 'fleetos-backup', version: 2, exportedAt: new Date().toISOString(), state: backupState, documents };
   }
+  async function listAutomaticBackups() {
+    const response = await request('/api/backups');
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Lista backupurilor automate nu a putut fi citită.');
+    return data.backups || [];
+  }
   function panelHtml() {
     return `<div class="panel"><div class="section-title"><div><h2>Migrare / actualizare bază de date</h2><p class="muted">Creează tabelele lipsă, rulează fișierele SQL noi din database/migrations și inițializează MySQL numai dacă este gol. Nu înlocuiește date existente.</p></div><button id="fleetMigrateButton" class="primary" type="button" onclick="FleetCloud.migrateAndConnect()">Migrare / actualizare</button></div><p class="muted">Utilizatorul MySQL trebuie să aibă privilegiile CREATE și ALTER. Actualizările fișierelor aplicației se publică separat în cPanel.</p></div>`;
   }
   function init(value) { context = value; setTimeout(() => { if (token()) bootstrap(); }, 0); }
-  window.FleetCloud = { init, panelHtml, request, schedule, connect, bootstrap, migrateAndConnect, syncToServer, syncForExit, syncFromServer, downloadDocument, deleteDocument, fullBackup, deviceRole, setDeviceRole };
+  window.FleetCloud = { init, panelHtml, request, schedule, connect, bootstrap, migrateAndConnect, syncToServer, syncForExit, syncFromServer, downloadDocument, deleteDocument, fullBackup, listAutomaticBackups, deviceRole, setDeviceRole, scheduleLocalBackupSnapshot, saveLocalBackupSnapshot };
   window.FleetCloudReady?.();
   window.addEventListener('online', () => { if (token()) bootstrap(); });
   window.setInterval(checkRemoteRevision, 30000);
