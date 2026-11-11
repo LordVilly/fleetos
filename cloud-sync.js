@@ -236,8 +236,16 @@
     setStatus('Se verifică și se actualizează schema MySQL…');
     try {
       const response = await request('/api/migrate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: context.getState() }) });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || 'Migrarea bazei de date nu a reușit.');
+      const raw = await response.text();
+      let data = null;
+      try { data = JSON.parse(raw); } catch { /* răspunsul serverului poate fi HTML/PHP */ }
+      if (!response.ok) {
+        if (data?.error) throw new Error(data.error);
+        const contentType = response.headers.get('content-type') || 'tip necunoscut';
+        throw new Error('Endpointul de migrare a răspuns HTTP ' + response.status + ' (' + contentType + '), fără mesaj JSON. Verificați în cPanel jurnalul PHP și regulile .htaccess pentru /api/migrate.');
+      }
+      if (!data || typeof data !== 'object') throw new Error('Serverul a răspuns HTTP ' + response.status + ', dar răspunsul de migrare nu este JSON valid. Verificați jurnalul PHP din cPanel.');
+
       if (data.stateInserted) {
         context.enableCloud(Number(data.revision || 1));
         paused = false;
