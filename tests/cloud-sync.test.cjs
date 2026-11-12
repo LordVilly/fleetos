@@ -24,10 +24,11 @@ function response(data, status = 200) {
   };
 }
 
-function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult = true, hasSnapshot = true, role = 'phone', backupFails = false, dirty = false }) {
+function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult = true, hasSnapshot = true, role = 'phone', backupFails = false, dirty = false, conflictOnce = false }) {
   let local = clone(initialLocal);
   let remoteState = initialRemote.state ? clone(initialRemote.state) : null;
   let remoteRevision = initialRemote.revision || 0;
+  let shouldConflictOnce = conflictOnce;
   const calls = [];
   const messages = [];
   const timeline = [];
@@ -43,6 +44,7 @@ function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult
     }
     if (url === '/api/state' && method === 'PUT') {
       const body = JSON.parse(options.body);
+      if (shouldConflictOnce) { shouldConflictOnce = false; remoteState = clone(remoteState); remoteState.vehicles.push({ id: 'server-race', name: 'Înregistrare simultană pe server' }); remoteRevision += 1; return response({ error: 'revision conflict', revision: remoteRevision }, 409); }
       if (Number(body.revision) !== Number(remoteRevision)) {
         return response({ error: 'revision conflict', revision: remoteRevision }, 409);
       }
@@ -170,7 +172,7 @@ function state(vehicles, extra = {}) {
   };
 }
 
-test('bootstrap merges edits from this device after backups, keeping its version for confirmed shared-ID conflicts', async () => {
+test('bootstrap automatically merges edits and backs up both conflict versions', async () => {
   const local = state([
     { id: 'shared-1', name: 'Nume vechi pe telefon', category: 'Autoturism' },
     { id: 'utility-local', name: 'Utilaj păstrat pe telefon', category: 'Utilaj' }
@@ -190,15 +192,15 @@ test('bootstrap merges edits from this device after backups, keeping its version
   assert.deepEqual(uploaded.vehicles.map(vehicle => vehicle.id), ['shared-1', 'utility-local', 'server-1']);
   assert.equal(uploaded.vehicles.find(vehicle => vehicle.id === 'shared-1').name, 'Nume vechi pe telefon');
   assert.equal(uploaded.vehicles.find(vehicle => vehicle.id === 'utility-local').category, 'Utilaj');
-  assert.deepEqual(harness.timeline, ['confirm', 'server-backup', 'put', 'apply']);
+  assert.deepEqual(harness.timeline, ['server-backup', 'server-backup', 'put', 'apply']);
   assert.equal(harness.getRemote().revision, 534);
   assert.equal(harness.getLocal().settings.cloudSyncEnabled, true);
-  assert.equal(harness.localBackups.size, 1);
-  assert.equal(harness.backups[0].source, 'phone');
-  assert.match(harness.messages.at(-1), /versiunea dispozitivului curent/i);
+  assert.ok(harness.localBackups.size >= 2);
+  assert.equal(harness.backups[1].source, 'phone');
+  assert.equal(harness.getConfirmCalls(), 0);
 });
 
-test('declining reconciliation preserves local data and sends no write request', async () => {
+test('automatic reconciliation combines local and server records without confirmation', async () => {
   const local = state([{ id: 'phone-utility', name: 'Utilaj local', category: 'Utilaj' }], {
     settings: { cloudSyncEnabled: false, cloudRevision: 0 }
   });
@@ -211,11 +213,10 @@ test('declining reconciliation preserves local data and sends no write request',
 
   await harness.cloud.bootstrap();
 
-  assert.equal(harness.calls.filter(call => call.method === 'PUT').length, 0);
-  assert.deepEqual(harness.getLocal().vehicles, local.vehicles);
-  assert.equal(harness.backups.length, 0);
-  assert.equal(harness.getConfirmCalls(), 1);
-  assert.equal(harness.getLocal().settings.cloudSyncEnabled, false);
+  assert.equal(harness.calls.filter(call => call.method === 'PUT').length, 1);
+  assert.deepEqual(harness.getRemote().state.vehicles.map(vehicle => vehicle.id), ['phone-utility', 'server-car']);
+  assert.equal(harness.getConfirmCalls(), 0);
+  assert.equal(harness.getLocal().settings.cloudSyncEnabled, true);
 });
 
 test('device with no local edits adopts the newer central revision without uploading', async () => {
@@ -329,7 +330,7 @@ test('reconciliation merges all supported record groups and keeps current-device
   }
 });
 
-test('same-ID device edits trigger reconciliation and are uploaded only after confirmation and backups', async () => {
+test('same-ID device edits synchronize automatically after backups', async () => {
   const local = state([{ id: 'shared-1', name: 'Corect pe telefon' }], { settings: { cloudSyncEnabled: true, cloudRevision: 12 } });
   const remote = { revision: 13, state: state([{ id: 'shared-1', name: 'Vechi pe server' }]) };
   const harness = makeHarness({ local, remote, dirty: true });
@@ -337,9 +338,10 @@ test('same-ID device edits trigger reconciliation and are uploaded only after co
   await harness.cloud.bootstrap();
 
   assert.equal(harness.getRemote().state.vehicles[0].name, 'Corect pe telefon');
-  assert.deepEqual(harness.timeline, ['confirm', 'server-backup', 'put', 'apply']);
-  assert.equal(harness.backups[0].snapshot.vehicles[0].name, 'Corect pe telefon');
-  assert.equal(harness.backups[0].serverSnapshot.vehicles[0].name, 'Vechi pe server');
+  assert.deepEqual(harness.timeline, ['server-backup', 'server-backup', 'put', 'apply']);
+  assert.equal(harness.backups[0].snapshot.vehicles[0].name, 'Vechi pe server');
+  assert.equal(harness.backups[1].snapshot.vehicles[0].name, 'Corect pe telefon');
+  assert.equal(harness.getConfirmCalls(), 0);
 });
 
 test('automatic laptop edits are backed up and uploaded to MySQL', async () => {
@@ -352,10 +354,23 @@ test('automatic laptop edits are backed up and uploaded to MySQL', async () => {
 
   assert.equal(harness.getRemote().state.vehicles[0].name, 'Nume actualizat pe laptop');
   assert.equal(harness.getRemote().revision, 5);
-  assert.deepEqual(harness.timeline, ['server-backup', 'put']);
+  assert.deepEqual(harness.timeline, ['server-backup', 'server-backup', 'put']);
   assert.equal(harness.getStorage('agendaCloudDirty'), undefined);
 });
 
+test('simultaneous server write is retried automatically without confirmation', async () => {
+  const local = state([{ id: 'vehicle-1', name: 'Editat pe laptop' }], { settings: { cloudSyncEnabled: true, cloudRevision: 4 } });
+  const remote = { revision: 4, state: state([{ id: 'vehicle-1', name: 'Nume vechi' }], { settings: { cloudSyncEnabled: true } }) };
+  const harness = makeHarness({ local, remote, role: 'computer', dirty: true, conflictOnce: true });
+
+  harness.cloud.schedule();
+  await harness.runTimers(1000);
+
+  assert.equal(harness.getRemote().state.vehicles.find(vehicle => vehicle.id === 'vehicle-1').name, 'Editat pe laptop');
+  assert.equal(harness.getRemote().state.vehicles.some(vehicle => vehicle.id === 'server-race'), true);
+  assert.equal(harness.getRemote().revision, 6);
+  assert.equal(harness.getConfirmCalls(), 0);
+});
 test('clean laptop automatically adopts changes made on the phone', async () => {
   const local = state([{ id: 'vehicle-1', name: 'Nume vechi pe laptop' }], { settings: { cloudSyncEnabled: true, cloudRevision: 4 } });
   const remote = { revision: 5, state: state([{ id: 'vehicle-1', name: 'Nume nou de pe telefon' }]) };
@@ -381,19 +396,20 @@ test('full backup includes document binaries referenced by the server snapshot',
   assert.ok(backup.documents[0].dataBase64.length > 0);
 });
 
-test('manual phone-to-server sync retains server-only records and confirms before replacing shared IDs', async () => {
+test('manual sync retains server-only records without confirmation', async () => {
   const local = state([{ id: 'shared', name: 'Telefon corect' }, { id: 'phone-only', name: 'Telefon nou' }], {
     settings: { cloudSyncEnabled: true, cloudRevision: 2 }
   });
   const remote = { revision: 3, state: state([{ id: 'shared', name: 'Server vechi' }, { id: 'server-only', name: 'Server unic' }]) };
-  const harness = makeHarness({ local, remote, role: 'computer' });
+  const harness = makeHarness({ local, remote, role: 'phone' });
 
   await harness.cloud.syncToServer();
 
   assert.deepEqual(harness.getRemote().state.vehicles.map(vehicle => vehicle.id), ['shared', 'phone-only', 'server-only']);
   assert.equal(harness.getRemote().state.vehicles[0].name, 'Telefon corect');
-  assert.deepEqual(harness.timeline, ['confirm', 'server-backup', 'put', 'apply']);
-  assert.equal(harness.backups[0].serverSnapshot.vehicles[0].name, 'Server vechi');
+  assert.deepEqual(harness.timeline, ['server-backup', 'server-backup', 'put', 'apply']);
+  assert.equal(harness.backups[0].snapshot.vehicles[0].name, 'Server vechi');
+  assert.equal(harness.getConfirmCalls(), 0);
 });
 
 test('manual phone sync still uploads local edits when the stored revision matches the server', async () => {
@@ -405,11 +421,11 @@ test('manual phone sync still uploads local edits when the stored revision match
 
   assert.equal(harness.getRemote().state.vehicles[0].name, 'Updated on phone');
   assert.equal(harness.getRemote().revision, 9);
-  assert.deepEqual(harness.timeline, ['confirm', 'server-backup', 'put', 'apply']);
+  assert.deepEqual(harness.timeline, ['server-backup', 'server-backup', 'put', 'apply']);
   const backupCall = harness.calls.findIndex(call => call.url === '/api/backups' && call.method === 'POST');
   const stateWriteCall = harness.calls.findIndex(call => call.url === '/api/state' && call.method === 'PUT');
   assert.ok(backupCall >= 0 && backupCall < stateWriteCall);
-  assert.equal(harness.localBackups.size, 1);
+  assert.equal(harness.localBackups.size, 3);
 });
 
 test('a failed automatic server backup stops synchronization before any state write', async () => {
@@ -421,7 +437,7 @@ test('a failed automatic server backup stops synchronization before any state wr
 
   assert.equal(harness.calls.filter(call => call.url === '/api/state' && call.method === 'PUT').length, 0);
   assert.equal(harness.getRemote().state.vehicles[0].name, 'Server copy');
-  assert.equal(harness.localBackups.size, 1);
+  assert.ok(harness.localBackups.size >= 2);
   assert.match(harness.messages.at(-1), /backup write failed/);
 });
 
