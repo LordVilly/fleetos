@@ -330,6 +330,22 @@ test('reconciliation merges all supported record groups and keeps current-device
   }
 });
 
+test('same-record sync preserves fields that changed on either device', async () => {
+  const local = state([{ id: 'vehicle-1', name: 'Denumire laptop', vin: 'VIN local', odometer: 1200 }], {
+    settings: { cloudSyncEnabled: true, cloudRevision: 3 }
+  });
+  const remote = { revision: 4, state: state([{ id: 'vehicle-1', name: 'Denumire server', category: 'Utilaj', odometer: 1100 }], { settings: { cloudSyncEnabled: true } }) };
+  const harness = makeHarness({ local, remote, dirty: true });
+
+  await harness.cloud.bootstrap();
+
+  const vehicle = harness.getRemote().state.vehicles[0];
+  assert.equal(vehicle.name, 'Denumire laptop');
+  assert.equal(vehicle.vin, 'VIN local');
+  assert.equal(vehicle.category, 'Utilaj');
+  assert.equal(vehicle.odometer, 1200);
+  assert.equal(harness.getConfirmCalls(), 0);
+});
 test('same-ID device edits synchronize automatically after backups', async () => {
   const local = state([{ id: 'shared-1', name: 'Corect pe telefon' }], { settings: { cloudSyncEnabled: true, cloudRevision: 12 } });
   const remote = { revision: 13, state: state([{ id: 'shared-1', name: 'Vechi pe server' }]) };
