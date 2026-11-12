@@ -24,11 +24,12 @@ function response(data, status = 200) {
   };
 }
 
-function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult = true, hasSnapshot = true, role = 'phone', backupFails = false, dirty = false, conflictOnce = false }) {
+function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult = true, hasSnapshot = true, role = 'phone', backupFails = false, dirty = false, conflictOnce = false, backupFailsOnce = false }) {
   let local = clone(initialLocal);
   let remoteState = initialRemote.state ? clone(initialRemote.state) : null;
   let remoteRevision = initialRemote.revision || 0;
   let shouldConflictOnce = conflictOnce;
+  let shouldFailBackupOnce = backupFailsOnce;
   const calls = [];
   const messages = [];
   const timeline = [];
@@ -54,7 +55,7 @@ function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult
       return response({ revision: remoteRevision });
     }
     if (url === '/api/backups' && method === 'POST') {
-      if (backupFails) return response({ error: 'backup write failed' }, 503);
+      if (backupFails || shouldFailBackupOnce) { shouldFailBackupOnce = false; return response({ error: 'backup write failed' }, 503); }
       const body = JSON.parse(options.body);
       backups.push({ snapshot: clone(body.state), source: body.source, serverSnapshot: clone(remoteState) });
       timeline.push('server-backup');
@@ -159,7 +160,8 @@ function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult
     getRemote: () => ({ revision: remoteRevision, state: remoteState }),
     getConfirmCalls: () => confirmCalls,
     runTimers,
-    getStorage: key => storage.get(key)
+    getStorage: key => storage.get(key),
+    allowBackupRetry() { shouldFailBackupOnce = false; }
   };
 }
 
@@ -387,6 +389,22 @@ test('simultaneous server write is retried automatically without confirmation', 
   assert.equal(harness.getRemote().revision, 6);
   assert.equal(harness.getConfirmCalls(), 0);
 });
+test('a failed backup retries local changes automatically on the next sync check', async () => {
+  const local = state([{ id: 'vehicle-1', name: 'Nume local' }], { settings: { cloudSyncEnabled: true, cloudRevision: 4 } });
+  const remote = { revision: 4, state: state([{ id: 'vehicle-1', name: 'Nume server' }], { settings: { cloudSyncEnabled: true } }) };
+  const harness = makeHarness({ local, remote, role: 'computer', dirty: true, backupFailsOnce: true });
+
+  harness.cloud.schedule();
+  await harness.runTimers(1000);
+  assert.equal(harness.getRemote().revision, 4);
+  harness.allowBackupRetry();
+  await harness.cloud.checkRemoteRevision();
+
+  assert.equal(harness.getRemote().state.vehicles[0].name, 'Nume local');
+  assert.equal(harness.getRemote().revision, 5);
+  assert.equal(harness.getConfirmCalls(), 0);
+});
+
 test('clean laptop automatically adopts changes made on the phone', async () => {
   const local = state([{ id: 'vehicle-1', name: 'Nume vechi pe laptop' }], { settings: { cloudSyncEnabled: true, cloudRevision: 4 } });
   const remote = { revision: 5, state: state([{ id: 'vehicle-1', name: 'Nume nou de pe telefon' }]) };
