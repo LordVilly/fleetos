@@ -19,7 +19,7 @@
     if (role !== 'phone' && role !== 'computer') return context?.notify('Alegeți Telefon principal sau Calculator.');
     try { localStorage.setItem('agendaSyncRole', role); }
     catch { return context?.notify('Rolul acestui dispozitiv nu a putut fi salvat în browser.'); }
-    context?.notify(role === 'phone' ? 'Acest dispozitiv este setat ca telefon principal.' : 'Acest dispozitiv este setat să încarce datele centrale.');
+    context?.notify(role === 'phone' ? 'Acest dispozitiv este setat ca telefon. Telefonul și calculatorul pot trimite și prelua modificări.' : 'Acest dispozitiv este setat ca calculator. Telefonul și calculatorul pot trimite și prelua modificări.');
     context?.render();
     if (token()) bootstrap();
   }
@@ -48,6 +48,26 @@
     if (Array.isArray(value)) return `[${value.map(stableSerialize).join(',')}]`;
     if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(',')}}`;
     return JSON.stringify(value);
+  }
+  const DIRTY_KEY = 'agendaCloudDirty';
+  function hasLocalChanges() {
+    try { return localStorage.getItem(DIRTY_KEY) === '1'; } catch { return false; }
+  }
+  function clearLocalChanges() {
+    try { localStorage.removeItem(DIRTY_KEY); } catch {}
+  }
+  function comparableCloudState(value) {
+    const copy = JSON.parse(JSON.stringify(value));
+    if (copy?.settings) delete copy.settings.cloudRevision;
+    return stableSerialize(copy);
+  }
+  function clearLocalChangesIfUnchanged(snapshot) {
+    if (comparableCloudState(context.getState()) === comparableCloudState(snapshot)) clearLocalChanges();
+  }
+  function comparableCloudSettings(value) {
+    const settings = { ...(value?.settings || {}) };
+    delete settings.cloudRevision;
+    return stableSerialize(settings);
   }
   function mergePhoneAuthoritativeRecords(local, remote) {
     const merged = { ...remote, ...local, settings: { ...(remote.settings || {}), ...(local.settings || {}) } };
@@ -206,19 +226,32 @@
     return data;
   }
   async function flush() {
-    if (!context || busy || paused || deviceRole() !== 'phone' || !token() || !context.getState().settings?.cloudSyncEnabled || !navigator.onLine) return;
+    if (!context || busy || paused || !token() || !context.getState().settings?.cloudSyncEnabled || !navigator.onLine) return;
     busy = true;
-    setStatus('Se sincronizează…');
+    let reconcile = false;
+    const snapshot = JSON.parse(JSON.stringify(context.getState()));
+    setStatus('Se sincronizează cu serverul…');
     try {
-      const current = Number(context.getState().settings.cloudRevision || 0);
-      const revision = await sendState(context.getState(), current);
-      persistRevision(revision);
-      await uploadPendingDocuments();
-      setStatus('Sincronizat cu serverul', true);
+      const current = Number(snapshot.settings?.cloudRevision || 0);
+      const remote = await getRemote();
+      if (remote.state && Number(remote.revision || 0) !== current) {
+        reconcile = true;
+        setStatus('Serverul are modificări noi · se reconciliază');
+      } else if (!remote.state && deviceRole() === 'computer') {
+        setStatus('Baza centrală este goală · inițializați-o din telefon sau folosiți sincronizarea manuală');
+        context.notify('Serverul nu are încă date. Pentru a evita publicarea accidentală a unei copii locale incomplete, inițializați baza din telefon sau porniți sincronizarea manuală de pe acest calculator.');
+      } else {
+        const revision = await sendState(snapshot, Number(remote.revision || 0));
+        persistRevision(revision);
+        clearLocalChangesIfUnchanged(snapshot);
+        await uploadPendingDocuments();
+        setStatus('Sincronizat cu serverul', true);
+      }
     } catch (error) {
       setStatus(navigator.onLine ? 'Sincronizare necesită atenție' : 'Offline · modificările rămân pe dispozitiv');
       context.notify(error.message);
     } finally { busy = false; }
+    if (reconcile && !paused) await bootstrap();
   }
   function schedule() {
     if (!context || !context.getState().settings?.cloudSyncEnabled || paused) return;
@@ -235,10 +268,13 @@
       const localRevision = Number(context.getState().settings.cloudRevision || 0);
       const serverChanged = Number(remote.revision || 0) !== localRevision;
       if (context.getState().settings.cloudSyncEnabled && serverChanged) {
-        paused = true;
+        setStatus('Se sincronizează modificările serverului…');
+        await bootstrap();
+        return;
       }
-      setStatus(context.getState().settings.cloudSyncEnabled && serverChanged ? 'Serverul s-a schimbat · încărcați versiunea serverului' : remote.state ? `Conectat · server revizia ${cloudRevision}` : 'Conectat · baza de date este goală', !(context.getState().settings.cloudSyncEnabled && serverChanged));
-      context.notify(remote.state ? `Conexiunea la MySQL a reușit. Acest dispozitiv este: ${deviceRole() === 'phone' ? 'telefon principal' : 'calculator'}; folosiți acțiunea de sincronizare în direcția indicată.` : deviceRole() === 'phone' ? 'Conexiunea la MySQL a reușit. Telefonul poate inițializa flota centrală.' : 'Conexiunea la MySQL a reușit. Așteptați inițializarea bazei de pe telefonul principal.');
+      paused = false;
+      setStatus(remote.state ? `Conectat · server revizia ${cloudRevision}` : 'Conectat · baza de date este goală', true);
+      context.notify(remote.state ? `Conexiunea la MySQL a reușit. Telefonul și calculatorul sincronizează automat în ambele sensuri; acest dispozitiv este setat ca ${deviceRole() === 'phone' ? 'telefon' : 'calculator'}.` : deviceRole() === 'phone' ? 'Conexiunea la MySQL a reușit. Telefonul poate inițializa flota centrală.' : 'Conexiunea la MySQL a reușit. Folosiți sincronizarea manuală pentru a publica prima flotă din acest calculator.');
     } catch (error) {
       setStatus('Conexiune indisponibilă');
       context.notify(error.message);
@@ -265,6 +301,7 @@
         }
         const revision = await sendState(local, Number(remote.revision || 0));
         context.enableCloud(revision);
+        clearLocalChanges();
         await uploadPendingDocuments();
         paused = false;
         setStatus('Baza centrală inițializată', true);
@@ -275,50 +312,52 @@
       // Load the central snapshot instead of displaying the local starter/demo state.
       if (!context.hasLocalSnapshot?.()) {
         context.applyRemote(remote.state, Number(remote.revision || 0));
+        clearLocalChanges();
         paused = false;
         await uploadPendingDocuments();
         setStatus('Conectat la baza centrală', true);
         context.notify('Flota a fost încărcată din baza de date centrală.');
         return;
       }
-      const counts = countReconciliationChanges(local, remote.state);
-      const total = Object.values(counts).reduce((sum, count) => sum + count.phoneOnly + count.phoneUpdated + count.serverOnly, 0);
-      if (role === 'computer') {
-        if (total > 0 || localRevision !== Number(remote.revision || 0)) {
-          if (!confirm(`Acesta este calculatorul de lucru. Serverul este sursa centrală și are revizia ${remote.revision || 0}; copia locală are ${localRevision}. Copia locală va fi salvată automat în arhiva dispozitivului, apoi calculatorul va încărca flota de pe server fără să trimită datele locale peste ea. Continuați?`)) {
-            paused = true;
-            setStatus('Încărcarea serverului este în așteptare');
-            context.notify('Datele locale au fost păstrate. Folosiți „Încarcă serverul” când doriți să actualizați calculatorul.');
-            return;
-          }
-          await saveLocalBackupSnapshot(local, 'calculator');
-        }
-        context.applyRemote(remote.state, Number(remote.revision || 0));
+      const remoteRevision = Number(remote.revision || 0);
+      if (comparableCloudState(local) === comparableCloudState(remote.state)) {
+        context.applyRemote(remote.state, remoteRevision);
+        clearLocalChanges();
+        paused = false;
+        setStatus('Sincronizat cu serverul', true);
+        if (localRevision !== remoteRevision) context.notify('Modificările serverului au fost preluate automat pe acest dispozitiv.');
+        return;
+      }
+      if (!hasLocalChanges() && role === 'computer') {
+        // A clean computer adopts the central copy, preventing old desktop caches from overwriting the phone fleet.
+        await saveLocalBackupSnapshot(local, role);
+        context.applyRemote(remote.state, remoteRevision);
+        clearLocalChanges();
         await uploadPendingDocuments();
         paused = false;
-        setStatus('Flota centrală este încărcată', true);
-        context.notify(total > 0 || localRevision !== Number(remote.revision || 0) ? 'Calculatorul a fost actualizat din server. Backupul local a fost descărcat.' : 'Calculatorul este sincronizat cu serverul.');
+        setStatus('Datele serverului au fost preluate automat', true);
+        context.notify('Agenda a preluat automat versiunea serverului. Copia locală anterioară a fost păstrată în backup.');
         return;
       }
-      if (total === 0) {
-        context.applyRemote(remote.state, Number(remote.revision || 0));
-        paused = false;
-        setStatus('Telefonul este sincronizat cu serverul', true);
-        return;
-      }
-      const details = Object.entries(counts).filter(([, count]) => count.phoneOnly + count.phoneUpdated + count.serverOnly > 0).map(([key, count]) => `${count.phoneOnly} noi pe telefon, ${count.phoneUpdated} actualizate pe telefon, ${count.serverOnly} doar pe server (${key})`).join('; ');
-      if (!confirm(`Telefonul este sursa principală. Diferențe: ${details}. Aplicația salvează automat copii recuperabile pe telefon și pe server înaintea sincronizării. Datele telefonului câștigă pentru același ID; înregistrările doar pe server se păstrează. Continuați?`)) {
-        paused = true;
-        setStatus('Sincronizare telefon în așteptare');
-        return;
-      }
+      const counts = countReconciliationChanges(local, remote.state);
+      const differences = Object.values(counts).reduce((sum, count) => sum + count.phoneOnly + count.phoneUpdated + count.serverOnly, 0);
+      const revisionChanged = localRevision !== remoteRevision;
+      const recordConflicts = revisionChanged ? Object.values(counts).reduce((sum, count) => sum + count.phoneUpdated, 0) : 0;
+      const settingsConflict = revisionChanged && comparableCloudSettings(local) !== comparableCloudSettings(remote.state);
       const merged = mergePhoneAuthoritativeRecords(local, remote.state);
-      const revision = await sendState(merged, Number(remote.revision || 0));
+      if ((recordConflicts > 0 || settingsConflict) && !confirm('Există modificări locale și pe server. Înainte de sincronizare, Agenda va salva copii automate. Pentru înregistrările cu același ID modificate diferit, versiunea dispozitivului curent va fi păstrată; înregistrările unice se combină. Continuați?')) {
+        paused = true;
+        setStatus('Sincronizare în așteptare · datele locale sunt păstrate');
+        context.notify('Nu s-a modificat nimic pe server. Datele de pe acest dispozitiv rămân salvate; sincronizarea poate fi reluată după verificare.');
+        return;
+      }
+      const revision = await sendState(merged, remoteRevision);
       context.applyRemote(merged, revision);
+      clearLocalChanges();
       await uploadPendingDocuments();
       paused = false;
-      setStatus('Telefonul este sincronizat cu serverul', true);
-      context.notify('Sincronizare reușită. Datele telefonului au avut prioritate, iar înregistrările unice de pe server au fost păstrate. Backupurile telefonului și serverului au fost descărcate.');
+      setStatus('Telefonul și calculatorul sunt sincronizate', true);
+      context.notify(differences ? 'Sincronizare reușită. Înregistrările unice au fost combinate; pentru ID-urile aflate în conflict a fost păstrată versiunea dispozitivului curent.' : 'Modificările au fost sincronizate automat între dispozitive.'); 
     } catch (error) {
       setStatus('Conexiune la baza centrală necesită atenție');
       context.notify('Nu am putut încărca datele centrale: ' + error.message);
@@ -369,12 +408,24 @@
     for (let attempt = 0; busy && attempt < 100; attempt++) await new Promise(resolve => setTimeout(resolve, 100));
     if (busy) throw new Error('O altă sincronizare este încă în curs. Așteptați puțin și încercați din nou.');
     clearTimeout(timer);
+    try {
+      const remote = await getRemote();
+      if (remote.state && Number(remote.revision || 0) !== Number(context.getState().settings?.cloudRevision || 0)) {
+        await bootstrap();
+        if (paused) throw new Error('Sincronizarea așteaptă confirmarea pentru un conflict. Datele au rămas salvate; reluați sincronizarea din Server operațional.');
+      }
+    } catch (error) {
+      setStatus('Sincronizarea serverului necesită atenție');
+      throw error;
+    }
     busy = true;
     setStatus('Se salvează datele înainte de ieșire…');
     try {
-      const revision = Number(context.getState().settings?.cloudRevision || 0);
-      const nextRevision = await sendState(context.getState(), revision);
+      const snapshot = JSON.parse(JSON.stringify(context.getState()));
+      const revision = Number(snapshot.settings?.cloudRevision || 0);
+      const nextRevision = await sendState(snapshot, revision);
       persistRevision(nextRevision);
+      clearLocalChangesIfUnchanged(snapshot);
       await uploadPendingDocuments();
       setStatus('Sincronizat cu serverul', true);
       return { synced: true, revision: nextRevision };
@@ -385,38 +436,38 @@
   }
   async function syncToServer() {
     if (!token()) return context.notify('Conectați-vă mai întâi la serverul Agenda.');
-    if (deviceRole() !== 'phone') return context.notify('Acest calculator este configurat să preia datele de pe server. Pentru publicarea flotei, folosiți telefonul principal sau schimbați rolul dispozitivului.');
     try {
       const remote = await getRemote();
-      let revision = Number(remote.revision || 0);
+      if (!remote.state && !context.hasLocalSnapshot?.()) return context.notify('Nu există date locale de publicat și baza centrală este goală.');
       let outgoing = context.getState();
+      const revision = Number(remote.revision || 0);
       if (remote.state) {
         const counts = countReconciliationChanges(outgoing, remote.state);
         const differences = Object.values(counts).reduce((sum, count) => sum + count.phoneOnly + count.phoneUpdated + count.serverOnly, 0);
-        if (differences > 0 && !confirm('Telefonul este sursa prioritară. Aplicația salvează automat copii recuperabile pe telefon și pe server înaintea sincronizării. Datele telefonului au prioritate pentru ID-urile comune, iar înregistrările doar de pe server se păstrează. Continuați?')) return;
-        if (differences > 0) {
-          outgoing = mergePhoneAuthoritativeRecords(outgoing, remote.state);
-        }
+        const conflicts = Object.values(counts).reduce((sum, count) => sum + count.phoneUpdated, 0);
+        const settingsConflict = Number(outgoing.settings?.cloudRevision || 0) !== revision && comparableCloudSettings(outgoing) !== comparableCloudSettings(remote.state);
+        if ((conflicts > 0 || settingsConflict) && !confirm('Există modificări pe acest dispozitiv și pe server. Agenda va crea automat backup înainte de publicare. Pentru înregistrările cu același ID modificate diferit, versiunea acestui dispozitiv va fi păstrată; înregistrările unice se vor combina. Continuați?')) return;
+        if (differences > 0) outgoing = mergePhoneAuthoritativeRecords(outgoing, remote.state);
       }
       const nextRevision = await sendState(outgoing, revision);
-      paused = false;
       context.applyRemote(outgoing, nextRevision);
+      clearLocalChanges();
       await uploadPendingDocuments();
-      setStatus('Sincronizat cu serverul', true);
-      paused = true;
-      context.render();
       paused = false;
-      context.notify('Datele telefonului au fost salvate în baza MySQL; înregistrările existente doar pe server au fost păstrate.');
+      setStatus('Telefonul și calculatorul sunt sincronizate', true);
+      context.render();
+      context.notify('Modificările de pe acest dispozitiv au fost salvate pe server și sunt disponibile pentru celălalt dispozitiv.');
     } catch (error) { setStatus('Sincronizare necesită atenție'); context.notify(error.message); }
   }
   async function syncFromServer() {
     if (!token()) return context.notify('Conectați-vă mai întâi la serverul Agenda.');
     try {
       const remote = await getRemote();
-      if (!remote.state) return context.notify('Baza de date nu conține încă o flotă. Încărcați datele de pe dispozitivul inițial.');
+      if (!remote.state) return context.notify('Baza de date nu conține încă o flotă. Încărcați datele de pe telefon sau inițializați baza din calculator.');
       if (!confirm('Datele locale de pe acest dispozitiv vor fi înlocuite cu versiunea din server. Se creează automat o copie locală recuperabilă înainte de înlocuire. Continuați?')) return;
       await saveLocalBackupSnapshot(context.getState(), deviceRole());
       context.applyRemote(remote.state, Number(remote.revision || 0));
+      clearLocalChanges();
       paused = false;
       setStatus('Sincronizat cu serverul', true);
       paused = true;
@@ -431,11 +482,10 @@
       const remote = await getRemote();
       const localRevision = Number(context.getState().settings.cloudRevision || 0);
       if (Number(remote.revision || 0) !== localRevision) {
-        paused = true;
-        setStatus('Serverul s-a schimbat · încărcați versiunea serverului');
-        context.notify('Au apărut modificări Agenda de pe celălalt dispozitiv. Încărcați versiunea serverului pentru a continua fără suprascriere.');
+        setStatus('Se preiau automat modificările de pe server…');
+        await bootstrap();
       }
-    } catch (error) { setStatus('Verificarea serverului a eșuat'); }
+    } catch (error) { setStatus('Verificarea serverului a eșuat'); context.notify(error.message); }
   }
   async function downloadDocument(id) {
     const response = await request(`/api/documents?id=${encodeURIComponent(id)}`);
