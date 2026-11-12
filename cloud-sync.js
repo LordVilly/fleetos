@@ -513,8 +513,8 @@
     try {
       const remote = await getRemote();
       const localRevision = Number(context.getState().settings.cloudRevision || 0);
-      if (Number(remote.revision || 0) !== localRevision) {
-        setStatus('Se preiau automat modificările de pe server…');
+      if (Number(remote.revision || 0) !== localRevision || hasLocalChanges()) {
+        setStatus(hasLocalChanges() ? 'Se reia sincronizarea automată a modificărilor locale…' : 'Se preiau automat modificările de pe server…');
         await bootstrap();
       }
     } catch (error) { setStatus('Verificarea serverului a eșuat'); context.notify(error.message); }
@@ -568,7 +568,7 @@
     return `<div class="panel"><div class="section-title"><div><h2>Migrare / actualizare bază de date</h2><p class="muted">Creează tabelele lipsă, rulează fișierele SQL noi din database/migrations și inițializează MySQL numai dacă este gol. Nu înlocuiește date existente.</p></div><button id="fleetMigrateButton" class="primary" type="button" onclick="FleetCloud.migrateAndConnect()">Migrare / actualizare</button></div><p class="muted">Utilizatorul MySQL trebuie să aibă privilegiile CREATE și ALTER. Actualizările fișierelor aplicației se publică separat în cPanel.</p></div>`;
   }
   function init(value) { context = value; setTimeout(() => { if (token()) bootstrap(); }, 0); }
-  window.FleetCloud = { init, panelHtml, request, schedule, connect, bootstrap, migrateAndConnect, syncToServer, syncForExit, syncFromServer, downloadDocument, deleteDocument, fullBackup, listAutomaticBackups, deviceRole, setDeviceRole, scheduleLocalBackupSnapshot, saveLocalBackupSnapshot };
+  window.FleetCloud = { init, panelHtml, request, schedule, connect, bootstrap, checkRemoteRevision, migrateAndConnect, syncToServer, syncForExit, syncFromServer, downloadDocument, deleteDocument, fullBackup, listAutomaticBackups, deviceRole, setDeviceRole, scheduleLocalBackupSnapshot, saveLocalBackupSnapshot };
   window.FleetCloudReady?.();
   window.addEventListener('online', () => { if (token()) bootstrap(); });
   window.setInterval(checkRemoteRevision, 30000);
