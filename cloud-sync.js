@@ -109,9 +109,9 @@
     const response = await request('/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state, revision }) });
     const data = await response.json().catch(() => ({}));
     if (response.status === 409) {
-      paused = true;
-      setStatus('Conflict între dispozitive · sincronizare oprită');
-      throw new Error(data.error || 'Serverul s-a schimbat pe celălalt dispozitiv. Alegeți încărcarea serverului sau confirmați înlocuirea lui.');
+      const conflict = new Error(data.error || 'Serverul s-a modificat în timpul sincronizării. Se reîncearcă îmbinarea automată.');
+      conflict.code = 'REVISION_CONFLICT';
+      throw conflict;
     }
     if (!response.ok) throw new Error(data.error || 'Nu am putut salva datele centrale.');
     return data.revision;
@@ -214,6 +214,10 @@
       });
     }, 1200);
   }
+  async function backupBeforeMerge(localState, serverState) {
+    await saveLocalBackupSnapshot(localState, deviceRole() + '-pre-sync-local');
+    await createAutomaticBackup(serverState, 'pre-sync-server');
+  }
   async function createAutomaticBackup(state, source = deviceRole()) {
     await saveLocalBackupSnapshot(state, source);
     const response = await request('/api/backups', {
@@ -241,6 +245,7 @@
         setStatus('Baza centrală este goală · inițializați-o din telefon sau folosiți sincronizarea manuală');
         context.notify('Serverul nu are încă date. Pentru a evita publicarea accidentală a unei copii locale incomplete, inițializați baza din telefon sau porniți sincronizarea manuală de pe acest calculator.');
       } else {
+        if (remote.state && comparableCloudState(snapshot) !== comparableCloudState(remote.state)) await backupBeforeMerge(snapshot, remote.state);
         const revision = await sendState(snapshot, Number(remote.revision || 0));
         persistRevision(revision);
         clearLocalChangesIfUnchanged(snapshot);
@@ -248,8 +253,13 @@
         setStatus('Sincronizat cu serverul', true);
       }
     } catch (error) {
-      setStatus(navigator.onLine ? 'Sincronizare necesită atenție' : 'Offline · modificările rămân pe dispozitiv');
-      context.notify(error.message);
+      if (error.code === 'REVISION_CONFLICT') {
+        reconcile = true;
+        setStatus('Serverul s-a actualizat simultan · se îmbină automat');
+      } else {
+        setStatus(navigator.onLine ? 'Sincronizare necesită atenție' : 'Offline · modificările rămân pe dispozitiv');
+        context.notify(error.message);
+      }
     } finally { busy = false; }
     if (reconcile && !paused) await bootstrap();
   }
@@ -341,23 +351,17 @@
       }
       const counts = countReconciliationChanges(local, remote.state);
       const differences = Object.values(counts).reduce((sum, count) => sum + count.phoneOnly + count.phoneUpdated + count.serverOnly, 0);
-      const revisionChanged = localRevision !== remoteRevision;
-      const recordConflicts = revisionChanged ? Object.values(counts).reduce((sum, count) => sum + count.phoneUpdated, 0) : 0;
-      const settingsConflict = revisionChanged && comparableCloudSettings(local) !== comparableCloudSettings(remote.state);
+      const recordConflicts = Object.values(counts).reduce((sum, count) => sum + count.phoneUpdated, 0);
+      const settingsConflict = comparableCloudSettings(local) !== comparableCloudSettings(remote.state);
       const merged = mergePhoneAuthoritativeRecords(local, remote.state);
-      if ((recordConflicts > 0 || settingsConflict) && !confirm('Există modificări locale și pe server. Înainte de sincronizare, Agenda va salva copii automate. Pentru înregistrările cu același ID modificate diferit, versiunea dispozitivului curent va fi păstrată; înregistrările unice se combină. Continuați?')) {
-        paused = true;
-        setStatus('Sincronizare în așteptare · datele locale sunt păstrate');
-        context.notify('Nu s-a modificat nimic pe server. Datele de pe acest dispozitiv rămân salvate; sincronizarea poate fi reluată după verificare.');
-        return;
-      }
+      if (recordConflicts > 0 || settingsConflict) await backupBeforeMerge(local, remote.state);
       const revision = await sendState(merged, remoteRevision);
       context.applyRemote(merged, revision);
       clearLocalChanges();
       await uploadPendingDocuments();
       paused = false;
       setStatus('Telefonul și calculatorul sunt sincronizate', true);
-      context.notify(differences ? 'Sincronizare reușită. Înregistrările unice au fost combinate; pentru ID-urile aflate în conflict a fost păstrată versiunea dispozitivului curent.' : 'Modificările au fost sincronizate automat între dispozitive.'); 
+      context.notify(differences ? 'Sincronizare automată reușită. Înregistrările unice au fost combinate; pentru ID-urile modificate pe ambele dispozitive s-a păstrat versiunea dispozitivului care a trimis ultima actualizare. Copiile anterioare au fost salvate automat.' : 'Modificările au fost sincronizate automat între dispozitive.'); 
     } catch (error) {
       setStatus('Conexiune la baza centrală necesită atenție');
       context.notify('Nu am putut încărca datele centrale: ' + error.message);
@@ -446,7 +450,7 @@
         const differences = Object.values(counts).reduce((sum, count) => sum + count.phoneOnly + count.phoneUpdated + count.serverOnly, 0);
         const conflicts = Object.values(counts).reduce((sum, count) => sum + count.phoneUpdated, 0);
         const settingsConflict = Number(outgoing.settings?.cloudRevision || 0) !== revision && comparableCloudSettings(outgoing) !== comparableCloudSettings(remote.state);
-        if ((conflicts > 0 || settingsConflict) && !confirm('Există modificări pe acest dispozitiv și pe server. Agenda va crea automat backup înainte de publicare. Pentru înregistrările cu același ID modificate diferit, versiunea acestui dispozitiv va fi păstrată; înregistrările unice se vor combina. Continuați?')) return;
+        if (conflicts > 0 || settingsConflict) await backupBeforeMerge(outgoing, remote.state);
         if (differences > 0) outgoing = mergePhoneAuthoritativeRecords(outgoing, remote.state);
       }
       const nextRevision = await sendState(outgoing, revision);
@@ -456,7 +460,7 @@
       paused = false;
       setStatus('Telefonul și calculatorul sunt sincronizate', true);
       context.render();
-      context.notify('Modificările de pe acest dispozitiv au fost salvate pe server și sunt disponibile pentru celălalt dispozitiv.');
+      context.notify('Modificările de pe acest dispozitiv au fost salvate automat pe server și sunt disponibile pentru celălalt dispozitiv.');
     } catch (error) { setStatus('Sincronizare necesită atenție'); context.notify(error.message); }
   }
   async function syncFromServer() {
