@@ -69,13 +69,41 @@
     delete settings.cloudRevision;
     return stableSerialize(settings);
   }
+  function mergeRecordPreferLocal(localValue, serverValue) {
+    if (Array.isArray(localValue) && Array.isArray(serverValue)) {
+      const localIds = new Set(localValue.map(item => item && typeof item === 'object' ? item.id : null).filter(Boolean));
+      if (localIds.size || serverValue.some(item => item && typeof item === 'object' && item.id)) {
+        const serverById = new Map(serverValue.filter(item => item?.id).map(item => [item.id, item]));
+        const merged = localValue.map(item => item?.id && serverById.has(item.id)
+          ? mergeRecordPreferLocal(item, serverById.get(item.id))
+          : item);
+        merged.push(...serverValue.filter(item => !item?.id || !localIds.has(item.id)));
+        return merged;
+      }
+      const merged = [...localValue];
+      for (const item of serverValue) if (!merged.some(existing => stableSerialize(existing) === stableSerialize(item))) merged.push(item);
+      return merged;
+    }
+    if (localValue && serverValue && typeof localValue === 'object' && typeof serverValue === 'object') {
+      const merged = { ...serverValue, ...localValue };
+      for (const key of Object.keys(serverValue)) {
+        if (Object.prototype.hasOwnProperty.call(localValue, key)) merged[key] = mergeRecordPreferLocal(localValue[key], serverValue[key]);
+      }
+      return merged;
+    }
+    return localValue === undefined ? serverValue : localValue;
+  }
   function mergePhoneAuthoritativeRecords(local, remote) {
-    const merged = { ...remote, ...local, settings: { ...(remote.settings || {}), ...(local.settings || {}) } };
+    const merged = mergeRecordPreferLocal(local || {}, remote || {});
     for (const key of ['vehicles', 'parts', 'safety', 'orders', 'history', 'alerts', 'alertResolutions']) {
       const phoneRecords = Array.isArray(local[key]) ? local[key] : [];
       const serverRecords = Array.isArray(remote[key]) ? remote[key] : [];
+      const serverById = new Map(serverRecords.filter(item => item?.id).map(item => [item.id, item]));
       const phoneIds = new Set(phoneRecords.map(item => item?.id).filter(Boolean));
-      merged[key] = [...phoneRecords, ...serverRecords.filter(item => !item?.id || !phoneIds.has(item.id))];
+      merged[key] = phoneRecords.map(item => item?.id && serverById.has(item.id)
+        ? mergeRecordPreferLocal(item, serverById.get(item.id))
+        : item);
+      merged[key].push(...serverRecords.filter(item => !item?.id || !phoneIds.has(item.id)));
     }
     return merged;
   }
