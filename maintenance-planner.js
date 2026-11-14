@@ -1,0 +1,116 @@
+let fleetMaintenancePlanCurrent=null;
+const FLEET_SHIFT_HOURS=10;
+function maintenanceDateKey(date){return date.getFullYear()+'-'+String(date.getMonth()+1).padStart(2,'0')+'-'+String(date.getDate()).padStart(2,'0')}
+function maintenanceParseDate(value){if(!value)return null;let m=String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);if(m){let d=new Date(Number(m[1]),Number(m[2])-1,Number(m[3]),12);return Number.isNaN(d.getTime())?null:d}let d=new Date(value);return Number.isNaN(d.getTime())?null:new Date(d.getFullYear(),d.getMonth(),d.getDate(),12)}
+function maintenanceAddDays(date,n){let d=new Date(date);d.setDate(d.getDate()+n);return d}
+function maintenanceAddMonths(date,n){let d=new Date(date),day=d.getDate();d.setDate(1);d.setMonth(d.getMonth()+n);let last=new Date(d.getFullYear(),d.getMonth()+1,0).getDate();d.setDate(Math.min(day,last));return d}
+function maintenanceIsWorkday(date){return date.getDay()!==0&&date.getDay()!==6}
+function maintenanceNextWorkday(date){let d=new Date(date);while(!maintenanceIsWorkday(d))d=maintenanceAddDays(d,1);return d}
+function maintenancePreviousWorkday(date){let d=new Date(date);while(!maintenanceIsWorkday(d))d=maintenanceAddDays(d,-1);return d}
+function maintenanceCounter(v,unit){let n=Number(v.meters?.[unit]??(v.unit===unit?v.usage:0));return Number.isFinite(n)?n:0}
+function maintenancePeriodEnd(start,period){let end=period==='7d'?maintenanceAddDays(start,6):period==='1m'?maintenanceAddDays(maintenanceAddMonths(start,1),-1):maintenanceAddDays(maintenanceAddMonths(start,6),-1);return end}
+function maintenancePeriodName(period){return period==='7d'?'1 săptămână':period==='1m'?'1 lună':'6 luni'}
+function maintenanceTimeLabel(slot,jobHours){let start=420+Math.round(slot*jobHours*60),end=start+Math.round(jobHours*60),fmt=n=>String(Math.floor(n/60)).padStart(2,'0')+':'+String(n%60).padStart(2,'0');return fmt(start)+'–'+fmt(end)}
+function maintenanceDateTimeLabel(date,slot,jobHours){return formatDateOnly(date)+(Number.isFinite(slot)?' · '+maintenanceTimeLabel(slot,jobHours):'')}
+function maintenanceBuildPlan(config){
+ const start=maintenanceParseDate(config.start)||maintenanceParseDate(maintenanceDateKey(new Date())),end=maintenancePeriodEnd(start,config.period),reserve=Number(config.reserveHours),jobHours=Number(config.jobHours),planHours=FLEET_SHIFT_HOURS-reserve,capacity=Math.max(0,Math.floor(planHours/jobHours));
+ const workdays=[];for(let d=new Date(start);d<=end;d=maintenanceAddDays(d,1))if(maintenanceIsWorkday(d))workdays.push(maintenanceDateKey(d));
+ const usage=new Map(workdays.map(k=>[k,0])),scheduled=[],monitoring=[],overflow=[];
+ const vehicles=(db.vehicles||[]).filter(v=>!v.retiredAt);
+ const allPeriodic=[];const baseline=[];
+ for(const v of vehicles){
+  const all=(db.parts||[]).filter(p=>p.vehicleId===v.id),eligible=all.filter(p=>['km','ore','date'].includes(p.criterion)&&Number(p.interval)>0);
+  if(!all.length){baseline.push({vehicle:v,items:[],reason:'Nu există repere configurate în mentenanța periodică.'});continue}
+  const noInterval=all.filter(p=>!eligible.includes(p));
+  if(noInterval.length)baseline.push({vehicle:v,items:noInterval,reason:'Intervalul de mentenanță nu este configurat sau confirmat.'});
+  for(const p of eligible){
+   const unit=p.criterion==='date'?'zile':p.criterion;
+   const hasLast=p.criterion==='date'?Boolean(p.lastDate&&maintenanceParseDate(p.lastDate)):p.last!==undefined&&p.last!==null&&p.last!=='';
+   if(p.requiresBaseline===true||!hasLast){
+    baseline.push({vehicle:v,items:[p],reason:'Istoric necunoscut · verificare inițială și stabilirea referinței.'});continue
+   }
+   if(p.criterion==='date'){
+    let last=maintenanceParseDate(p.lastDate);if(!last){baseline.push({vehicle:v,items:[p],reason:'Data ultimei înlocuiri lipsește; verificare inițială.'});continue}
+    let due=maintenanceAddDays(last,Number(p.interval));if(due<=end)allPeriodic.push({vehicle:v,item:p,targetDate:due,overdue:due<start,criterion:'Calendar',target:'Scadent la '+formatDateOnly(maintenanceDateKey(due)),remaining:'Interval '+Number(p.interval)+' zile'})
+   }else{
+    let current=maintenanceCounter(v,p.criterion),last=Number(p.last),target=last+Number(p.interval),remaining=target-current,avg=meterDailyAverage(v,p.criterion);
+    let detail='Scadent la '+target.toLocaleString('ro-RO')+' '+unit+' · contor '+current.toLocaleString('ro-RO')+' '+unit;
+    if(remaining<=0)allPeriodic.push({vehicle:v,item:p,targetDate:start,overdue:true,criterion:unit==='km'?'Kilometri':'Ore',target:detail,remaining:'Depășit cu '+Math.abs(Math.round(remaining)).toLocaleString('ro-RO')+' '+unit})
+    else if(avg&&avg.perDay>0){let due=maintenanceAddDays(start,Math.ceil(remaining/avg.perDay));if(due<=end)allPeriodic.push({vehicle:v,item:p,targetDate:due,overdue:false,criterion:unit==='km'?'Kilometri':'Ore',target:detail,remaining:Math.round(remaining).toLocaleString('ro-RO')+' '+unit+' · medie '+(unit==='km'?Math.round(avg.perDay):Number(avg.perDay.toFixed(1))).toLocaleString('ro-RO')+' '+unit+'/zi'})}
+    else monitoring.push({vehicle:v,items:[p],reason:detail+' · Data estimată indisponibilă; sunt necesare minimum două citiri recente ale contorului.'})
+   }
+  }
+ }
+ // Group scadentele apropiate de aceeași zi pentru același vehicul într-o singură vizită de atelier.
+ const grouped=new Map();for(const x of allPeriodic){let d=maintenanceDateKey(x.targetDate),key=x.vehicle.id+'|'+d;if(!grouped.has(key))grouped.set(key,{vehicle:x.vehicle,items:[],targetDate:x.targetDate,overdue:false,details:[]});let g=grouped.get(key);g.items.push(x.item);g.overdue=g.overdue||x.overdue;g.details.push(x.target+(x.remaining?' · '+x.remaining:''))}
+ const known=[...grouped.values()].sort((a,b)=>a.targetDate-b.targetDate||String(a.vehicle.internal).localeCompare(String(b.vehicle.internal),'ro'));
+ function findSlot(target){if(!capacity||!workdays.length)return null;let bounded=target<start?start:target>end?end:target,previous=maintenancePreviousWorkday(bounded);if(previous<start)previous=maintenanceNextWorkday(start);let key=maintenanceDateKey(previous);for(let i=workdays.length-1;i>=0;i--){if(workdays[i]<=key&&usage.get(workdays[i])<capacity){let slot=usage.get(workdays[i]);usage.set(workdays[i],slot+1);return {date:workdays[i],slot}}}return null}
+ for(const visit of known){let assigned=findSlot(visit.targetDate);if(assigned)scheduled.push({...visit,date:assigned.date,slot:assigned.slot,kind:visit.overdue?'Scadență depășită':'Scadență calculată',reason:visit.details.join('; ')});else overflow.push({...visit,kind:'De planificat',reason:'Scadență: '+visit.details.join('; ')})}
+ // Intervențiile cu istoric incomplet sunt distribuite între zilele lucrătoare disponibile.
+ const baselineByVehicle=new Map();for(const item of baseline){let id=item.vehicle.id;if(!baselineByVehicle.has(id))baselineByVehicle.set(id,{vehicle:item.vehicle,items:[],reasons:[]});let g=baselineByVehicle.get(id);g.items.push(...item.items);g.reasons.push(item.reason)}
+ const baselineVisits=[...baselineByVehicle.values()],freeSlots=[];for(const day of workdays){for(let n=usage.get(day);n<capacity;n++)freeSlots.push({date:day,slot:n})}
+ for(let i=0;i<baselineVisits.length;i++){const visit=baselineVisits[i];let slotIndex=baselineVisits.length===1?Math.floor(freeSlots.length/2):Math.floor(i*(freeSlots.length-1)/(baselineVisits.length-1));if(freeSlots.length){let assigned=freeSlots.splice(Math.min(Math.max(slotIndex,0),freeSlots.length-1),1)[0];usage.set(assigned.date,usage.get(assigned.date)+1);scheduled.push({...visit,date:assigned.date,slot:assigned.slot,kind:'Stabilire referință',reason:visit.reasons.join(' ')})}else overflow.push({...visit,kind:'De planificat',baseline:true,reason:visit.reasons.join(' ')})}
+ scheduled.sort((a,b)=>a.date.localeCompare(b.date)||String(a.vehicle.internal).localeCompare(String(b.vehicle.internal),'ro'));
+ const totalScheduled=scheduled.length,unknownCount=scheduled.filter(x=>x.kind==='Stabilire referință').length+overflow.length,monitorCount=monitoring.length;
+ return {period:config.period,start,end,reserveHours:reserve,jobHours,plannedHours:planHours,capacity,scheduled,monitoring,overflow,unknownCount,monitorCount,totalScheduled,vehicleCount:vehicles.length,workdays:workdays.length,generatedAt:new Date()}
+}
+function maintenanceVehicleLabel(v){return [v.name,v.internal?'('+v.internal+')':'',v.category?'· '+v.category:''].filter(Boolean).join(' ')}
+function maintenanceItemLabel(p){return [p.name||'Reper periodic',p.model?'Model: '+p.model:'',p.intervalDescription||''].filter(Boolean).join(' · ')}
+function maintenancePreviewRow(x,dateLabel){let items=(x.items||[]).map(maintenanceItemLabel).join(' / ')||x.reason;return '<article class="maintenance-preview-row"><div class="maintenance-preview-date">'+esc(dateLabel||'—')+'</div><div><strong>'+esc(maintenanceVehicleLabel(x.vehicle))+'</strong><div class="muted">'+esc(x.reason||'')+'</div></div><div><strong>'+esc(x.kind||'Monitorizare')+'</strong><div class="muted">'+esc(items)+'</div></div></article>'}
+function openFleetMaintenancePlanner(){
+ const cfg=db.settings.maintenancePlanner||{},todayKey=maintenanceDateKey(new Date());
+ modal('Program de mentenanță al flotei','<p class="muted">Planificare preventivă calculată din datele salvate în fișele vehiculelor. Se includ doar vehiculele active.</p><div class="field"><label>Orizontul programului</label><select id="fleetMaintenancePeriod"><option value="7d">1 săptămână</option><option value="1m">1 lună</option><option value="6m" selected>6 luni</option></select></div><div class="field"><label>Data de început</label><input id="fleetMaintenanceStart" type="date" value="'+todayKey+'"></div><div class="field"><label>Rezervă zilnică pentru intervenții neprevăzute (ore)</label><input id="fleetMaintenanceReserve" type="number" min="0" max="8" step="0.5" value="'+(Number(cfg.reserveHours)||4)+'"></div><div class="field"><label>Durată estimată per vizită (ore)</label><input id="fleetMaintenanceJobHours" type="number" min="0.5" max="10" step="0.5" value="'+(Number(cfg.jobHours)||2)+'"></div><p class="muted">Atelier: luni–vineri, 07:00–17:00. Ore planificate/zi = 10 ore minus rezerva setată. Vizitele fără istoric sunt repartizate în zilele disponibile; durata este o estimare configurabilă.</p>',()=>previewFleetMaintenancePlanner(),'Previzualizează programul')
+}
+function previewFleetMaintenancePlanner(){
+ const period=document.querySelector('#fleetMaintenancePeriod')?.value||'6m',start=document.querySelector('#fleetMaintenanceStart')?.value||maintenanceDateKey(new Date()),reserve=Number(document.querySelector('#fleetMaintenanceReserve')?.value),jobHours=Number(document.querySelector('#fleetMaintenanceJobHours')?.value);
+ if(!Number.isFinite(reserve)||reserve<0||reserve>8){notify('Rezerva trebuie să fie între 0 și 8 ore.');return}
+ if(!Number.isFinite(jobHours)||jobHours<.5||jobHours>FLEET_SHIFT_HOURS-reserve){notify('Durata per vizită trebuie să fie de minimum 0,5 ore și să încapă în timpul planificat zilnic.');return}
+ const config={period,start,reserveHours:reserve,jobHours};db.settings.maintenancePlanner=config;save();fleetMaintenancePlanCurrent=maintenanceBuildPlan(config);
+ const p=fleetMaintenancePlanCurrent,rows=p.scheduled.slice(0,12).map(x=>maintenancePreviewRow(x,maintenanceDateTimeLabel(x.date,x.slot,p.jobHours))).join(''),overflow=p.overflow.slice(0,5).map(x=>maintenancePreviewRow(x,'Neplanificat')).join(''),monitor=p.monitoring.slice(0,5).map(x=>maintenancePreviewRow(x,'De monitorizat')).join('');
+ const more=p.scheduled.length>12?'<p class="muted">+'+(p.scheduled.length-12)+' vizite suplimentare în PDF</p>':'';
+ const note=p.monitoring.length?'<div class="maintenance-plan-note"><strong>Monitorizare necesară</strong><p>'+p.monitoring.length+' reper(e) nu au o dată estimabilă din contoarele actuale; sunt listate separat în PDF.</p></div>':'';
+ modal('Previzualizare · '+maintenancePeriodName(p.period),'<div class="maintenance-plan-kpis"><div><span>Vizite programate</span><strong>'+p.totalScheduled+'</strong></div><div><span>Istoric necunoscut</span><strong>'+p.unknownCount+'</strong></div><div><span>Monitorizare</span><strong>'+p.monitorCount+'</strong></div></div><p class="muted">'+formatDateOnly(maintenanceDateKey(p.start))+' — '+formatDateOnly(maintenanceDateKey(p.end))+' · '+p.capacity+' vizite/zi · rezervă '+p.reserveHours+' h/zi pentru neprevăzute</p><div class="maintenance-plan-note">Datele cu istoric necunoscut apar ca <b>stabilire referință</b>; nu se inventează data ultimei înlocuiri.</div><div class="maintenance-preview-list">'+(rows||'<div class="empty">Nu există lucrări cu scadență calculată în perioada aleasă.</div>')+'</div>'+more+(overflow?'<h3>Capacitatea perioadei este depășită</h3><div class="maintenance-preview-list">'+overflow+'</div>':'')+(monitor?'<h3>Contoare fără prognoză</h3><div class="maintenance-preview-list">'+monitor+'</div>':'')+note+'<div class="maintenance-plan-actions"><button type="button" class="primary" onclick="downloadFleetMaintenancePdf()">Descarcă PDF</button><button type="button" class="good" onclick="shareFleetMaintenancePdf()">Partajează PDF</button></div>',()=>closeModal(),'Închide')
+}
+function maintenancePlanRows(plan){let rows=[];for(const x of plan.scheduled)rows.push({date:maintenanceDateTimeLabel(x.date,x.slot,plan.jobHours),vehicle:maintenanceVehicleLabel(x.vehicle),work:(x.items||[]).map(maintenanceItemLabel).join('\n')||'Verificare inițială',plan:x.kind+' · '+x.reason});for(const x of plan.monitoring)rows.push({date:'—',vehicle:maintenanceVehicleLabel(x.vehicle),work:(x.items||[]).map(maintenanceItemLabel).join('\n'),plan:'DE MONITORIZAT · '+x.reason});for(const x of plan.overflow)rows.push({date:'De planificat',vehicle:maintenanceVehicleLabel(x.vehicle),work:(x.items||[]).map(maintenanceItemLabel).join('\n')||'Verificare inițială',plan:'CAPACITATE DEPĂȘITĂ · '+x.reason});return rows}
+function maintenanceWrap(ctx,text,maxWidth,maxLines=3){let words=String(text||'—').split(/\s+/),lines=[],line='';for(const word of words){let trial=line?line+' '+word:word;if(ctx.measureText(trial).width>maxWidth&&line){lines.push(line);line=word}else line=trial}if(line)lines.push(line);if(lines.length>maxLines){lines=lines.slice(0,maxLines);let last=lines[maxLines-1];while(last&&ctx.measureText(last+'…').width>maxWidth)last=last.slice(0,-1);lines[maxLines-1]=last.trimEnd()+'…'}return lines}
+function maintenanceCanvasPage(rows,page,total,plan){
+ const W=1240,H=1754,scale=W/794,canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;const ctx=canvas.getContext('2d');if(!ctx)throw new Error('Canvasul pentru PDF nu este disponibil în acest browser.');ctx.scale(scale,scale);
+ const bg='#f5f7f4',ink='#182e27',muted='#63766d',green='#164b3b',mint='#d9eee4',amber='#e7b957',line='#d6e0d9',red='#a84b42',white='#ffffff';
+ ctx.fillStyle=bg;ctx.fillRect(0,0,794,1123);
+ ctx.fillStyle=green;ctx.fillRect(0,0,794,184);ctx.fillStyle=amber;ctx.fillRect(40,35,5,34);ctx.fillStyle='#b5d8ca';ctx.font='700 11px Arial';ctx.fillText('AGENDA  /  MANAGEMENT TEHNIC AL FLOTEI',58,48);
+ ctx.fillStyle=white;ctx.font='700 27px Arial';ctx.fillText('PROGRAM DE MENTENANȚĂ',42,99);ctx.fillText('AL FLOTEI',42,133);
+ ctx.fillStyle='#d4e4dc';ctx.font='13px Arial';ctx.fillText('Planificare preventivă · revizii periodice și stabilirea referințelor de service',42,160);
+ const dateRange=formatDateOnly(maintenanceDateKey(plan.start))+' — '+formatDateOnly(maintenanceDateKey(plan.end));
+ ctx.fillStyle=white;ctx.font='700 11px Arial';ctx.fillText('ORIZONT',42,215);ctx.fillText('GENERAT LA',294,215);ctx.fillText('PROGRAM ATELIER',544,215);
+ ctx.fillStyle=ink;ctx.font='700 15px Arial';ctx.fillText(maintenancePeriodName(plan.period),42,239);ctx.fillText(formatDateOnly(maintenanceDateKey(plan.generatedAt)),294,239);ctx.fillText('L–V · 07:00–17:00',544,239);
+ const cards=[{x:42,label:'VIZITE PLANIFICATE',value:String(plan.totalScheduled),color:green},{x:284,label:'ISTORIC NECUNOSCUT',value:String(plan.unknownCount),color:'#bb792a'},{x:526,label:'MONITORIZARE / CAPACITATE',value:String(plan.monitorCount+plan.overflow.length),color:'#3b7180'}];
+ for(const c of cards){ctx.fillStyle=white;ctx.fillRect(c.x,264,226,66);ctx.fillStyle=c.color;ctx.fillRect(c.x,264,4,66);ctx.fillStyle=muted;ctx.font='700 9px Arial';ctx.fillText(c.label,c.x+14,284);ctx.fillStyle=c.color;ctx.font='700 24px Arial';ctx.fillText(c.value,c.x+14,316)}
+ ctx.fillStyle=mint;ctx.fillRect(42,344,710,42);ctx.fillStyle=green;ctx.font='700 10px Arial';ctx.fillText('CAPACITATE',56,362);ctx.font='11px Arial';ctx.fillText((plan.plannedHours).toLocaleString('ro-RO')+' h planificate/zi · '+plan.reserveHours+' h rezervate pentru intervenții neprevăzute · '+plan.jobHours+' h/vizită',56,378);
+ let y=418;const cols=[{x:42,w:85,label:'DATA / ORĂ'},{x:127,w:176,label:'VEHICUL / UTILAJ'},{x:303,w:286,label:'OPERAȚIUNE / REPER'},{x:589,w:163,label:'SCADENȚĂ / ACȚIUNE'}];
+ ctx.fillStyle=green;ctx.fillRect(42,y,710,34);ctx.fillStyle=white;ctx.font='700 9px Arial';for(const c of cols)ctx.fillText(c.label,c.x+9,y+21);
+ y+=34;
+ if(!rows.length){ctx.fillStyle=white;ctx.fillRect(42,y,710,80);ctx.fillStyle=muted;ctx.font='13px Arial';ctx.fillText('Nu există vizite în intervalul selectat.',58,y+43);y+=80}
+ for(let i=0;i<rows.length;i++){
+  const r=rows[i],isUnknown=/referință|necunoscut/i.test(r.plan),isOverdue=/depășit|scadentă depășită/i.test(r.plan),height=92;
+  ctx.fillStyle=i%2?'#f0f4f1':white;ctx.fillRect(42,y,710,height);ctx.fillStyle=isUnknown?'#bb792a':isOverdue?red:green;ctx.fillRect(42,y,4,height);
+  ctx.strokeStyle=line;ctx.beginPath();ctx.moveTo(42,y+height);ctx.lineTo(752,y+height);ctx.stroke();
+  const values=[r.date,r.vehicle,r.work,r.plan];for(let j=0;j<cols.length;j++){let c=cols[j],text=values[j],color=j===3?(isUnknown?'#8a5a1e':isOverdue?red:ink):ink;ctx.fillStyle=color;ctx.font=j===1?'700 10px Arial':j===3?'700 9px Arial':'10px Arial';let lines=maintenanceWrap(ctx,text,c.w-18,4);lines.forEach((ln,k)=>ctx.fillText(ln,c.x+9,y+19+k*14))}
+  y+=height
+ }
+ const footerY=1080;ctx.strokeStyle=line;ctx.beginPath();ctx.moveTo(42,footerY);ctx.lineTo(752,footerY);ctx.stroke();ctx.fillStyle=muted;ctx.font='10px Arial';ctx.fillText('Document de planificare · Date preluate din evidența salvată a flotei',42,1100);ctx.fillStyle=ink;ctx.font='700 10px Arial';ctx.fillText('Întocmit de Ing. Lehaci Vasile',516,1100);ctx.fillStyle=green;ctx.font='700 9px Arial';ctx.fillText('PAGINA '+page+' / '+total,42,1116);
+ return canvas
+}
+async function maintenanceCanvasJpeg(canvas){return await new Promise((resolve,reject)=>canvas.toBlob(blob=>blob?resolve(blob):reject(new Error('Nu s-a putut pregăti pagina PDF.')),'image/jpeg',.9))}
+async function maintenancePdfBlob(plan){
+ const rows=maintenancePlanRows(plan),maxRows=6,pageChunks=[];if(!rows.length)pageChunks.push([]);else for(let i=0;i<rows.length;i+=maxRows)pageChunks.push(rows.slice(i,i+maxRows));
+ const pages=[];for(let i=0;i<pageChunks.length;i++){let canvas=maintenanceCanvasPage(pageChunks[i],i+1,pageChunks.length,plan),blob=await maintenanceCanvasJpeg(canvas),data=await blob.arrayBuffer();pages.push({width:canvas.width,height:canvas.height,bytes:new Uint8Array(data)})}
+ const pageCount=pages.length,objCount=2+pageCount*3,objects=new Array(objCount+1);objects[1]='<< /Type /Catalog /Pages 2 0 R >>';let kids=[];
+ for(let i=0;i<pageCount;i++){let pageObj=3+i*3,contentObj=pageObj+1,imageObj=pageObj+2,name='Im'+(i+1),stream='q 595.28 0 0 841.89 0 0 cm /'+name+' Do Q';kids.push(pageObj+' 0 R');objects[pageObj]='<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Resources << /XObject << /'+name+' '+imageObj+' 0 R >> >> /Contents '+contentObj+' 0 R >>';objects[contentObj]='<< /Length '+stream.length+' >>\nstream\n'+stream+'\nendstream';let binary='';for(let j=0;j<pages[i].bytes.length;j+=0x8000)binary+=String.fromCharCode(...pages[i].bytes.subarray(j,j+0x8000));objects[imageObj]='<< /Type /XObject /Subtype /Image /Width '+pages[i].width+' /Height '+pages[i].height+' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length '+binary.length+' >>\nstream\n'+binary+'\nendstream'}
+ objects[2]='<< /Type /Pages /Kids ['+kids.join(' ')+'] /Count '+pageCount+' >>';
+ let pdf='%PDF-1.4\n',offsets=[0];for(let id=1;id<=objCount;id++){offsets[id]=pdf.length;pdf+=id+' 0 obj\n'+objects[id]+'\nendobj\n'}let xref=pdf.length;pdf+='xref\n0 '+(objCount+1)+'\n0000000000 65535 f \n';for(let id=1;id<=objCount;id++)pdf+=String(offsets[id]).padStart(10,'0')+' 00000 n \n';pdf+='trailer\n<< /Size '+(objCount+1)+' /Root 1 0 R >>\nstartxref\n'+xref+'\n%%EOF';
+ const bytes=new Uint8Array(pdf.length);for(let i=0;i<pdf.length;i++)bytes[i]=pdf.charCodeAt(i)&255;return new Blob([bytes],{type:'application/pdf'})
+}
+function maintenancePdfFilename(plan){return 'program-mentenanta-flota-'+maintenanceDateKey(plan.generatedAt)+'-'+plan.period+'.pdf'}
+async function createMaintenancePdfFile(plan){const blob=await maintenancePdfBlob(plan),name=maintenancePdfFilename(plan);return new File([blob],name,{type:'application/pdf',lastModified:Date.now()})}
+async function downloadFleetMaintenancePdf(){if(!fleetMaintenancePlanCurrent)return notify('Generează mai întâi previzualizarea programului.');try{let file=await createMaintenancePdfFile(fleetMaintenancePlanCurrent),url=URL.createObjectURL(file),a=document.createElement('a');a.href=url;a.download=file.name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);notify('PDF-ul programului de mentenanță a fost descărcat.')}catch(error){notify('PDF-ul nu a putut fi generat: '+error.message)}}
+async function shareFleetMaintenancePdf(){if(!fleetMaintenancePlanCurrent)return notify('Generează mai întâi previzualizarea programului.');try{let file=await createMaintenancePdfFile(fleetMaintenancePlanCurrent);if(navigator.share&&navigator.canShare?.({files:[file]})){await navigator.share({files:[file],title:'Program de mentenanță al flotei',text:'Program de mentenanță · '+maintenancePeriodName(fleetMaintenancePlanCurrent.period)+'\nIng. Lehaci Vasile'});notify('Meniul de partajare a PDF-ului a fost deschis.')}else{let url=URL.createObjectURL(file),a=document.createElement('a');a.href=url;a.download=file.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);notify('Partajarea directă nu este disponibilă pe acest dispozitiv. PDF-ul a fost descărcat și poate fi partajat din Fișiere.')}}catch(error){if(error?.name!=='AbortError')notify('Partajarea PDF-ului nu a reușit: '+error.message)}}
