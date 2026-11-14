@@ -1,9 +1,10 @@
 const CACHE_PREFIX = 'fleetos-shell-';
-const CACHE_NAME = `${CACHE_PREFIX}v16`;
+const CACHE_NAME = `${CACHE_PREFIX}v17`;
 const SHELL = [
   '/',
   '/index.html',
   '/cloud-sync.js',
+  '/maintenance-planner.js',
   '/pwa.js',
   '/auth.js',
   '/manifest.webmanifest',
