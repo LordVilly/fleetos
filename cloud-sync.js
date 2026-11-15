@@ -93,11 +93,27 @@
     }
     return localValue === undefined ? serverValue : localValue;
   }
+  function mergeDeletionTombstones(local, remote) {
+    const byId = new Map();
+    for (const item of [...(Array.isArray(local) ? local : []), ...(Array.isArray(remote) ? remote : [])]) {
+      if (!item?.table || !item?.recordId) continue;
+      const id = item.id || item.table + ':' + item.recordId;
+      const existing = byId.get(id);
+      if (!existing || String(item.deletedAt || '') >= String(existing.deletedAt || '')) byId.set(id, { ...item, id });
+    }
+    return [...byId.values()];
+  }
+  function filterDeletedRecords(records, table, tombstones) {
+    const deleted = new Set(tombstones.filter(item => item.table === table).map(item => String(item.recordId)));
+    return (Array.isArray(records) ? records : []).filter(item => !item?.id || !deleted.has(String(item.id)));
+  }
   function mergePhoneAuthoritativeRecords(local, remote) {
     const merged = mergeRecordPreferLocal(local || {}, remote || {});
+    const tombstones = mergeDeletionTombstones(local?.deletedRecords, remote?.deletedRecords);
+    merged.deletedRecords = tombstones;
     for (const key of ['vehicles', 'parts', 'safety', 'orders', 'history', 'alerts', 'alertResolutions']) {
-      const phoneRecords = Array.isArray(local[key]) ? local[key] : [];
-      const serverRecords = Array.isArray(remote[key]) ? remote[key] : [];
+      const phoneRecords = filterDeletedRecords(local?.[key], key, tombstones);
+      const serverRecords = filterDeletedRecords(remote?.[key], key, tombstones);
       const serverById = new Map(serverRecords.filter(item => item?.id).map(item => [item.id, item]));
       const phoneIds = new Set(phoneRecords.map(item => item?.id).filter(Boolean));
       merged[key] = phoneRecords.map(item => item?.id && serverById.has(item.id)
@@ -109,9 +125,11 @@
   }
   function mergeServerAuthoritativeRecords(local, remote) {
     const merged = { ...local, ...remote, settings: { ...(local.settings || {}), ...(remote.settings || {}) } };
+    const tombstones = mergeDeletionTombstones(local?.deletedRecords, remote?.deletedRecords);
+    merged.deletedRecords = tombstones;
     for (const key of ['vehicles', 'parts', 'safety', 'orders', 'history', 'alerts', 'alertResolutions']) {
-      const serverRecords = Array.isArray(remote[key]) ? remote[key] : [];
-      const localRecords = Array.isArray(local[key]) ? local[key] : [];
+      const serverRecords = filterDeletedRecords(remote?.[key], key, tombstones);
+      const localRecords = filterDeletedRecords(local?.[key], key, tombstones);
       const serverIds = new Set(serverRecords.map(item => item?.id).filter(Boolean));
       merged[key] = [...serverRecords, ...localRecords.filter(item => !item?.id || !serverIds.has(item.id))];
     }
