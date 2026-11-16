@@ -69,13 +69,29 @@
     delete settings.cloudRevision;
     return stableSerialize(settings);
   }
+  function recordEditTime(record) {
+    const value = Date.parse(record?._syncUpdatedAt || '');
+    return Number.isFinite(value) ? value : 0;
+  }
+  function mergeSyncedRecord(localRecord, serverRecord) {
+    const localTime = recordEditTime(localRecord), serverTime = recordEditTime(serverRecord);
+    if (localTime !== serverTime) return localTime > serverTime ? localRecord : serverRecord;
+    if (!localTime) return serverRecord; // Legacy conflicts have no timestamps; keep the central copy as the safe baseline.
+    return mergeRecordPreferLocal(localRecord, serverRecord);
+  }
+  function mergeSettingsByTimestamp(localSettings, serverSettings) {
+    const localTime = recordEditTime(localSettings), serverTime = recordEditTime(serverSettings);
+    if (localTime > serverTime) return localSettings;
+    if (serverTime > localTime) return serverSettings;
+    return { ...(localSettings || {}), ...(serverSettings || {}) };
+  }
   function mergeRecordPreferLocal(localValue, serverValue) {
     if (Array.isArray(localValue) && Array.isArray(serverValue)) {
       const localIds = new Set(localValue.map(item => item && typeof item === 'object' ? item.id : null).filter(Boolean));
       if (localIds.size || serverValue.some(item => item && typeof item === 'object' && item.id)) {
         const serverById = new Map(serverValue.filter(item => item?.id).map(item => [item.id, item]));
         const merged = localValue.map(item => item?.id && serverById.has(item.id)
-          ? mergeRecordPreferLocal(item, serverById.get(item.id))
+          ? mergeSyncedRecord(item, serverById.get(item.id))
           : item);
         merged.push(...serverValue.filter(item => !item?.id || !localIds.has(item.id)));
         return merged;
@@ -85,9 +101,14 @@
       return merged;
     }
     if (localValue && serverValue && typeof localValue === 'object' && typeof serverValue === 'object') {
+      const localTime = recordEditTime(localValue), serverTime = recordEditTime(serverValue);
+      if (localTime || serverTime) return localTime > serverTime ? localValue : serverValue;
       const merged = { ...serverValue, ...localValue };
       for (const key of Object.keys(serverValue)) {
-        if (Object.prototype.hasOwnProperty.call(localValue, key)) merged[key] = mergeRecordPreferLocal(localValue[key], serverValue[key]);
+        if (!Object.prototype.hasOwnProperty.call(localValue, key)) continue;
+        merged[key] = key === 'settings' && localValue[key] && serverValue[key]
+          ? mergeSettingsByTimestamp(localValue[key], serverValue[key])
+          : mergeRecordPreferLocal(localValue[key], serverValue[key]);
       }
       return merged;
     }
@@ -117,14 +138,14 @@
       const serverById = new Map(serverRecords.filter(item => item?.id).map(item => [item.id, item]));
       const phoneIds = new Set(phoneRecords.map(item => item?.id).filter(Boolean));
       merged[key] = phoneRecords.map(item => item?.id && serverById.has(item.id)
-        ? mergeRecordPreferLocal(item, serverById.get(item.id))
+        ? mergeSyncedRecord(item, serverById.get(item.id))
         : item);
       merged[key].push(...serverRecords.filter(item => !item?.id || !phoneIds.has(item.id)));
     }
     return merged;
   }
   function mergeServerAuthoritativeRecords(local, remote) {
-    const merged = { ...local, ...remote, settings: { ...(local.settings || {}), ...(remote.settings || {}) } };
+    const merged = { ...local, ...remote, settings: mergeSettingsByTimestamp(local.settings || {}, remote.settings || {}) };
     const tombstones = mergeDeletionTombstones(local?.deletedRecords, remote?.deletedRecords);
     merged.deletedRecords = tombstones;
     for (const key of ['vehicles', 'parts', 'safety', 'orders', 'history', 'alerts', 'alertResolutions']) {
