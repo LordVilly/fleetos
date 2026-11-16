@@ -9,6 +9,15 @@ const FDT_IMPORT_TTL = 1800;
 
 final class FdtHttpException extends RuntimeException { public function __construct(string $message, public readonly int $status = 400) { parent::__construct($message); } }
 function fdt_fail(string $message, int $status = 400): never { throw new FdtHttpException($message, $status); }
+function fdt_cleanup_private_dir(string $dir): void {
+    foreach (glob($dir . DIRECTORY_SEPARATOR . 'token-*.json') ?: [] as $tokenFile) {
+        $record=json_decode((string)@file_get_contents($tokenFile),true);
+        if (!is_array($record) || (int)($record['expiresAt']??0)>=time()) continue;
+        $archive=basename((string)($record['archive']??''));
+        if (preg_match('/^agenda-(?:transfer|import)-[a-zA-Z0-9-]+\.zip$/',$archive)) @unlink($dir . DIRECTORY_SEPARATOR . $archive);
+        @unlink($tokenFile);
+    }
+}
 function fdt_private_dir(): string {
     $root = realpath(dirname(__DIR__, 2));
     $docRoot = realpath((string)($_SERVER['DOCUMENT_ROOT'] ?? dirname(__DIR__)));
@@ -21,6 +30,7 @@ function fdt_private_dir(): string {
     @chmod($dir, 0700);
     $real = realpath($dir);
     if ($real === false || ($docRoot !== false && ($real === $docRoot || str_starts_with($real . DIRECTORY_SEPARATOR, rtrim($docRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)))) fdt_fail('Arhivele nu pot fi păstrate în siguranță în afara spațiului public.', 503);
+    fdt_cleanup_private_dir($real);
     return $real;
 }
 function fdt_random_id(): string { return bin2hex(random_bytes(32)); }
@@ -65,10 +75,13 @@ function fdt_schema(PDO $pdo, string $table): array {
     return array_map(static fn(array $c): array => ['name'=>$c['Field'], 'type'=>strtolower((string)$c['Type']), 'nullable'=>$c['Null']==='YES', 'key'=>(string)$c['Key'], 'extra'=>strtolower((string)$c['Extra'])], $stmt->fetchAll());
 }
 function fdt_tables(PDO $pdo): array {
-    $all = $pdo->query('SHOW TABLES')->fetchAll(PDO::FETCH_COLUMN);
+    $status = $pdo->query('SHOW TABLE STATUS')->fetchAll(); $engines=[];
+    foreach($status as $row) $engines[(string)$row['Name']] = strtoupper((string)($row['Engine']??''));
+    $all = array_keys(array_filter($engines, static fn($engine)=>$engine!==''));
     $tables = array_values(array_filter($all, static fn($t) => preg_match('/^fleetos_[a-z0-9_]+$/i', (string)$t)));
     sort($tables, SORT_STRING);
     if (!in_array('fleetos_state', $tables, true) || !in_array('fleetos_documents', $tables, true) || !in_array('fleetos_migrations', $tables, true)) fdt_fail('Schema Agenda nu este completă. Rulați întâi Setări → Migrare / actualizare bază de date pe ambele servere.', 409);
+    foreach($tables as $table) if(($engines[$table]??'')!=='INNODB') fdt_fail('Tabelul ' . $table . ' nu folosește InnoDB. Importul tranzacțional/rollback nu poate fi garantat.',409);
     return $tables;
 }
 function fdt_schema_version(PDO $pdo): array {
@@ -88,8 +101,10 @@ function fdt_build_archive(PDO $pdo): string {
     $zipPath = $dir . DIRECTORY_SEPARATOR . 'agenda-transfer-' . gmdate('Ymd-His') . '-' . bin2hex(random_bytes(4)) . '.zip';
     $zip = new ZipArchive();
     if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) { @rmdir($tmp); fdt_fail('Arhiva ZIP nu a putut fi creată. Verificați spațiul disponibil.', 503); }
-    $files = []; $tableMeta = []; $tables = fdt_tables($pdo);
+    $files = []; $tableMeta = []; $tables = fdt_tables($pdo); $snapshotStarted=false;
     try {
+        $pdo->exec('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        $pdo->exec('START TRANSACTION WITH CONSISTENT SNAPSHOT'); $snapshotStarted=true;
         foreach ($tables as $table) {
             $entry = 'database/' . $table . '.jsonl'; $local = $tmp . DIRECTORY_SEPARATOR . $table . '.jsonl';
             $out = fopen($local, 'wb'); if (!$out) throw new RuntimeException('Nu s-a putut crea dump-ul tabelului ' . $table . '.');
@@ -118,10 +133,11 @@ function fdt_build_archive(PDO $pdo): string {
         $json = json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if ($json === false || !$zip->addFromString('manifest.json', $json)) throw new RuntimeException('Manifestul arhivei nu a putut fi creat.');
         if (!$zip->close()) throw new RuntimeException('Arhiva ZIP nu s-a finalizat corect.');
+        $pdo->commit(); $snapshotStarted=false;
         @chmod($zipPath, 0600);
         return $zipPath;
     } catch (Throwable $error) {
-        $zip->close(); @unlink($zipPath); throw $error;
+        $zip->close(); if($snapshotStarted&&$pdo->inTransaction())$pdo->rollBack(); @unlink($zipPath); throw $error;
     } finally {
         foreach (glob($tmp . DIRECTORY_SEPARATOR . '*') ?: [] as $f) @unlink($f);
         @rmdir($tmp);
