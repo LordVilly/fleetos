@@ -217,6 +217,11 @@ if ($route === 'auth/logout' && $method === 'POST') {
 $mutation = in_array($method, ['POST', 'PUT', 'DELETE'], true);
 fleetos_require_auth($mutation);
 
+if (str_starts_with($route, 'data-transfer/')) {
+    require_once __DIR__ . '/data-transfer.php';
+    fdt_handle($route, $method);
+}
+
 if ($route === 'health' && $method === 'GET') fleetos_json(['ok' => true, 'configured' => fleetos_value('OPENAI_API_KEY') !== '', 'databaseConfigured' => fleetos_dotenv_value('DB_HOST') !== '' && fleetos_dotenv_value('DB_NAME') !== '' && fleetos_dotenv_value('DB_USER') !== '' && fleetos_dotenv_value('DB_PASSWORD') !== '', 'backend' => 'php', 'model' => fleetos_value('OPENAI_MODEL','gpt-6-astra')]);
 if ($route === 'vehicle/read' && $method === 'POST') fleetos_read_vehicle();
 if ($route === 'vehicle/investigate' && $method === 'POST') fleetos_investigate();
