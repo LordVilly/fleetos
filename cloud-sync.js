@@ -657,11 +657,9 @@
       } finally { paused = false; }
       const summary = Object.entries(result.counts || {}).map(([table, count]) => table + ': ' + count).join(' · ');
       transferStatus('Import reușit. ' + summary + ' · atașamente restaurate: ' + Number(result.filesRestored || 0) + '.', true);
-      if (result.backupDownloadUrl) {
-        const a = document.createElement('a'); a.href = result.backupDownloadUrl; a.download = 'Agenda-backup-inainte-de-import.zip'; a.hidden = true;
-        document.body.appendChild(a); a.click(); a.remove();
-      }
-      context?.notify('Importul a reușit; copia anterioară a fost oferită la descărcare.');
+      const backupLink = document.querySelector('#agendaTransferBackupLink');
+      if (backupLink && result.backupDownloadUrl) { backupLink.href = result.backupDownloadUrl; backupLink.hidden = false; }
+      context?.notify('Importul a reușit. Backupul anterior poate fi descărcat din linkul afișat în Setări.');
     } catch (error) {
       transferStatus(error.message); context?.notify(error.message);
     } finally { if (button) button.disabled = false; }
@@ -669,8 +667,8 @@
   function panelHtml() {
     return `<div class="panel"><div class="section-title"><div><h2>Migrare / actualizare bază de date</h2><p class="muted">Creează tabelele lipsă, rulează migrațiile noi și inițializează MySQL numai dacă este gol.</p></div><button id="fleetMigrateButton" class="primary" type="button" onclick="FleetCloud.migrateAndConnect()">Migrare / actualizare</button></div><p class="muted">Utilizatorul MySQL trebuie să aibă privilegiile CREATE și ALTER. Actualizările fișierelor aplicației se publică separat în cPanel.</p></div>
     <div class="panel" id="agenda-data-transfer"><div class="section-title"><div><h2>Transfer complet de date</h2><p class="muted">Arhivă ZIP unică, cu datele tuturor tabelelor Agenda și atașamente. Exportul și importul sunt disponibile numai după autentificare.</p></div></div>
-      <div class="toolbar"><button id="agendaDataExportButton" type="button" class="primary" onclick="FleetCloud.createDataExport()">Descarcă arhiva completă</button><label class="button" for="agendaDataImportFile">Alege arhiva ZIP pentru import</label><input id="agendaDataImportFile" type="file" accept=".zip,application/zip" hidden onchange="FleetCloud.chooseDataImport(this)"><button id="agendaDataImportButton" type="button" onclick="document.getElementById('agendaDataImportFile').click()">Importă date</button></div>
-      <p class="muted">Importul verifică integritatea, relațiile și versiunea schemei, apoi cere confirmare și salvează backupul bazei țintă înainte de înlocuire. Nu include .env, parole sau tokenuri. Linkul de export expiră în 15 minute și poate fi folosit o singură dată.</p><p id="agendaDataTransferStatus" class="muted" aria-live="polite"></p>
+      <div class="toolbar"><button id="agendaDataExportButton" type="button" class="primary" onclick="FleetCloud.createDataExport()">Descarcă arhiva completă</button><input id="agendaDataImportFile" type="file" accept=".zip,application/zip" hidden onchange="FleetCloud.chooseDataImport(this)"><button id="agendaDataImportButton" type="button" onclick="document.getElementById('agendaDataImportFile').click()">Alege arhivă ZIP și importă</button></div>
+      <p class="muted">Importul verifică integritatea, relațiile și versiunea schemei, apoi cere confirmare și salvează backupul bazei țintă înainte de înlocuire. Nu include .env, parole sau tokenuri. Linkul de export expiră în 15 minute și poate fi folosit o singură dată.</p><p id="agendaDataTransferStatus" class="muted" aria-live="polite"></p><a id="agendaTransferBackupLink" class="badge good" hidden download="Agenda-backup-inainte-de-import.zip">Descarcă backupul creat înainte de import</a>
     </div>`;
   }
   function init(value) { context = value; setTimeout(() => { if (token()) bootstrap(); }, 0); }
