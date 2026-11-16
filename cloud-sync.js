@@ -603,11 +603,78 @@
     if (!response.ok) throw new Error(data.error || 'Lista backupurilor automate nu a putut fi citită.');
     return data.backups || [];
   }
+  function transferStatus(message, good = false) {
+    const node = document.querySelector('#agendaDataTransferStatus');
+    if (node) { node.textContent = message; node.className = good ? 'statusline' : 'muted'; }
+  }
+  async function transferResponse(response) {
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Operația de transfer a eșuat.');
+    return data;
+  }
+  async function createDataExport() {
+    const button = document.querySelector('#agendaDataExportButton');
+    if (button) button.disabled = true;
+    transferStatus('Se pregătește arhiva securizată…');
+    try {
+      const data = await transferResponse(await request('/api/data-transfer/export-link', { method: 'POST' }));
+      const a = document.createElement('a');
+      a.href = data.downloadUrl; a.download = 'Agenda-transfer.zip'; a.hidden = true;
+      document.body.appendChild(a); a.click(); a.remove();
+      transferStatus('Arhiva ZIP a fost generată și descărcarea a pornit. Linkul este valabil 15 minute și o singură descărcare.', true);
+      context?.notify('Exportul Agenda este pregătit pentru descărcare.');
+    } catch (error) { transferStatus(error.message); context?.notify(error.message); }
+    finally { if (button) button.disabled = false; }
+  }
+  async function chooseDataImport(input) {
+    const file = input?.files?.[0]; if (!file) return;
+    input.value = '';
+    if (!file.name.toLowerCase().endsWith('.zip')) { transferStatus('Selectați o arhivă .zip Agenda.'); return; }
+    const button = document.querySelector('#agendaDataImportButton');
+    if (button) button.disabled = true;
+    let stagedToken = '';
+    try {
+      transferStatus('Se verifică arhiva și compatibilitatea schemei. Baza nu se modifică în această etapă…');
+      const form = new FormData(); form.append('archive', file, file.name);
+      const prepared = await transferResponse(await request('/api/data-transfer/prepare', { method: 'POST', body: form }));
+      stagedToken = prepared.token;
+      const preview = prepared.preview || {}, counts = preview.counts || {};
+      const detail = Object.entries(counts).map(([table, count]) => table.replace(/^fleetos_/, '') + ': ' + count).join('\n');
+      const manifest = preview.manifest || {};
+      const prompt = 'Arhiva este validă și compatibilă cu schema ' + (manifest.schemaVersion?.fingerprint || '') + '.\n\nÎnregistrări:\n' + detail + '\n\nBaza țintă ' + (preview.existingData ? 'conține deja date' : 'nu conține snapshot activ') + '. Înainte de import se va crea un backup privat pe server, iar înlocuirea va rula într-o tranzacție.\n\nImportul este o migrare punctuală și va înlocui datele curente ale aplicației pe acest server. Continuați?';
+      if (!window.confirm(prompt)) {
+        await request('/api/data-transfer/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: stagedToken }) }).catch(() => {});
+        transferStatus('Import anulat. Baza de date nu a fost modificată.');
+        return;
+      }
+      transferStatus('Import în curs. Se creează backupul țintă…');
+      const result = await transferResponse(await request('/api/data-transfer/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: stagedToken, confirmation: 'IMPORTAȚI DATELE PESTE BAZA EXISTENTĂ' }) }));
+      clearLocalChanges();
+      paused = true;
+      try {
+        const remote = await getRemote();
+        if (remote.state) { context.applyRemote(remote.state, Number(remote.revision || 0)); context.render(); }
+      } finally { paused = false; }
+      const summary = Object.entries(result.counts || {}).map(([table, count]) => table + ': ' + count).join(' · ');
+      transferStatus('Import reușit. ' + summary + ' · atașamente restaurate: ' + Number(result.filesRestored || 0) + '.', true);
+      if (result.backupDownloadUrl) {
+        const a = document.createElement('a'); a.href = result.backupDownloadUrl; a.download = 'Agenda-backup-inainte-de-import.zip'; a.hidden = true;
+        document.body.appendChild(a); a.click(); a.remove();
+      }
+      context?.notify('Importul a reușit; copia anterioară a fost oferită la descărcare.');
+    } catch (error) {
+      transferStatus(error.message); context?.notify(error.message);
+    } finally { if (button) button.disabled = false; }
+  }
   function panelHtml() {
-    return `<div class="panel"><div class="section-title"><div><h2>Migrare / actualizare bază de date</h2><p class="muted">Creează tabelele lipsă, rulează fișierele SQL noi din database/migrations și inițializează MySQL numai dacă este gol. Nu înlocuiește date existente.</p></div><button id="fleetMigrateButton" class="primary" type="button" onclick="FleetCloud.migrateAndConnect()">Migrare / actualizare</button></div><p class="muted">Utilizatorul MySQL trebuie să aibă privilegiile CREATE și ALTER. Actualizările fișierelor aplicației se publică separat în cPanel.</p></div>`;
+    return `<div class="panel"><div class="section-title"><div><h2>Migrare / actualizare bază de date</h2><p class="muted">Creează tabelele lipsă, rulează migrațiile noi și inițializează MySQL numai dacă este gol.</p></div><button id="fleetMigrateButton" class="primary" type="button" onclick="FleetCloud.migrateAndConnect()">Migrare / actualizare</button></div><p class="muted">Utilizatorul MySQL trebuie să aibă privilegiile CREATE și ALTER. Actualizările fișierelor aplicației se publică separat în cPanel.</p></div>
+    <div class="panel" id="agenda-data-transfer"><div class="section-title"><div><h2>Transfer complet de date</h2><p class="muted">Arhivă ZIP unică, cu datele tuturor tabelelor Agenda și atașamente. Exportul și importul sunt disponibile numai după autentificare.</p></div></div>
+      <div class="toolbar"><button id="agendaDataExportButton" type="button" class="primary" onclick="FleetCloud.createDataExport()">Descarcă arhiva completă</button><label class="button" for="agendaDataImportFile">Alege arhiva ZIP pentru import</label><input id="agendaDataImportFile" type="file" accept=".zip,application/zip" hidden onchange="FleetCloud.chooseDataImport(this)"><button id="agendaDataImportButton" type="button" onclick="document.getElementById('agendaDataImportFile').click()">Importă date</button></div>
+      <p class="muted">Importul verifică integritatea, relațiile și versiunea schemei, apoi cere confirmare și salvează backupul bazei țintă înainte de înlocuire. Nu include .env, parole sau tokenuri. Linkul de export expiră în 15 minute și poate fi folosit o singură dată.</p><p id="agendaDataTransferStatus" class="muted" aria-live="polite"></p>
+    </div>`;
   }
   function init(value) { context = value; setTimeout(() => { if (token()) bootstrap(); }, 0); }
-  window.FleetCloud = { init, panelHtml, request, schedule, connect, bootstrap, checkRemoteRevision, migrateAndConnect, syncToServer, syncForExit, syncFromServer, downloadDocument, deleteDocument, fullBackup, listAutomaticBackups, deviceRole, setDeviceRole, scheduleLocalBackupSnapshot, saveLocalBackupSnapshot };
+  window.FleetCloud = { init, panelHtml, request, schedule, connect, bootstrap, checkRemoteRevision, migrateAndConnect, syncToServer, syncForExit, syncFromServer, downloadDocument, deleteDocument, fullBackup, listAutomaticBackups, createDataExport, chooseDataImport, deviceRole, setDeviceRole, scheduleLocalBackupSnapshot, saveLocalBackupSnapshot };
   window.FleetCloudReady?.();
   window.addEventListener('online', () => { if (token()) bootstrap(); });
   window.setInterval(checkRemoteRevision, 30000);
