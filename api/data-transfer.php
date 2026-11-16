@@ -216,6 +216,7 @@ function fdt_dispatch(string $route, string $method): never {
     }
     if ($route==='data-transfer/download' && $method==='GET') {
         $record=fdt_consume_token((string)($_GET['token']??''),'export'); $name=(string)($record['archive']??'');
+        if (($record['user']??'') !== (string)($_SESSION['fleetos_user']??'')) fdt_fail('Acest link temporar aparține altui administrator.',403);
         if (!preg_match('/^agenda-transfer-[a-zA-Z0-9-]+\.zip$/',$name)) fdt_fail('Arhiva temporară nu este validă.',404);
         $path=$dir.DIRECTORY_SEPARATOR.$name; if (!is_file($path)) fdt_fail('Arhiva a expirat sau a fost descărcată deja.',410);
         header('Content-Type: application/zip'); header('Content-Disposition: attachment; filename="Agenda-transfer-' . gmdate('Y-m-d') . '.zip"'); header('Content-Length: ' . filesize($path)); header('Cache-Control: no-store, private'); header('X-Content-Type-Options: nosniff'); readfile($path); @unlink($path); exit;
