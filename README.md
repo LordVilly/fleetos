@@ -25,7 +25,7 @@ Agenda este o aplicație web/PWA. Interfața rulează în browser, iar backendul
 Pentru a inițializa baza cu flota din browserul curent, autentificați-vă pe dispozitivul care conține datele și apăsați **Setări → Migrare / actualizare bază de date**. Butonul creează schema și stochează snapshotul local numai dacă MySQL nu conține deja unul. Documentele locale atașate sunt încărcate după inițializare.
 
 Dacă restaurați un backup JSON, importați-l în browser prin **Setări → Importă backup JSON** înainte de migrarea inițială. Pentru backupuri foarte mari sau restaurare administrativă prin CLI, `scripts/import-local-backup.php` rămâne disponibil; el necesită ca schema să existe și refuză să suprascrie datele fără opțiunea explicită `--replace`.
-## Migrații viitoare
+## Transfer între servere\n\nFluxul complet de export/import ZIP, compatibilitatea schemei și pașii de rollback sunt documentate în [DATA_MIGRATION.md](DATA_MIGRATION.md).\n\n## Migrații viitoare
 
 Pentru o schimbare de schemă, adăugați un fișier SQL nou, de exemplu `database/migrations/0002_vehicle_metadata.sql`, apoi publicați versiunea aplicației în cPanel. După deployment, apăsați **Setări → Migrare / actualizare bază de date**. Migrațiile deja aplicate sunt protejate prin checksum și nu trebuie modificate. Actualizarea codului HTML/PHP/JS rămâne un pas separat de deployment; butonul aplică doar migrațiile bazei incluse în versiunea deja instalată.
 
