@@ -17,6 +17,9 @@ function fdt_cleanup_private_dir(string $dir): void {
         if (preg_match('/^agenda-(?:transfer|import)-[a-zA-Z0-9-]+\.zip$/',$archive)) @unlink($dir . DIRECTORY_SEPARATOR . $archive);
         @unlink($tokenFile);
     }
+    foreach (array_merge(glob($dir . DIRECTORY_SEPARATOR . 'agenda-transfer-*.zip') ?: [], glob($dir . DIRECTORY_SEPARATOR . 'agenda-import-*.zip') ?: []) as $archive) {
+        if (is_file($archive) && (filemtime($archive) ?: time()) < time() - 86400) @unlink($archive);
+    }
 }
 function fdt_private_dir(): string {
     $root = realpath(dirname(__DIR__, 2));
@@ -66,8 +69,7 @@ function fdt_consume_staged_token(string $token, string $kind): array {
         flock($fp, LOCK_UN); fclose($fp); @unlink($path);
         fdt_fail('Sesiunea temporară de import a expirat sau nu aparține utilizatorului autentificat.', 410);
     }
-    // Keep staged imports reusable after a failed transaction; remove only after a committed import.
-    flock($fp, LOCK_UN); fclose($fp);
+    ftruncate($fp, 0); fflush($fp); flock($fp, LOCK_UN); fclose($fp); @unlink($path);
     return $record;
 }
 function fdt_schema(PDO $pdo, string $table): array {
@@ -128,8 +130,9 @@ function fdt_build_archive(PDO $pdo): string {
             $files[$entry] = ['sha256'=>hash_file('sha256', $local), 'bytes'=>filesize($local)];
             $tableMeta[$table] = ['rows'=>$count, 'columns'=>$columns, 'file'=>$entry];
         }
-        $index = @file_get_contents(dirname(__DIR__) . DIRECTORY_SEPARATOR . 'index.html');
-        $manifest = ['format'=>FDT_FORMAT, 'formatVersion'=>FDT_FORMAT_VERSION, 'application'=>'Agenda', 'applicationBuild'=>$index === false ? 'unknown' : 'sha256:' . hash('sha256', $index), 'schemaVersion'=>fdt_schema_version($pdo), 'createdAt'=>gmdate(DATE_ATOM), 'tables'=>$tableMeta, 'files'=>$files, 'includesSecrets'=>false];
+        $buildFiles=['index.html','cloud-sync.js','sw.js','api/index.php','api/bootstrap.php','api/data-transfer.php','database/schema.sql']; $buildParts=[];
+        foreach($buildFiles as $relative) { $file=dirname(__DIR__) . DIRECTORY_SEPARATOR . str_replace('/',DIRECTORY_SEPARATOR,$relative); $buildParts[$relative]=is_file($file)?hash_file('sha256',$file):null; }
+        $manifest = ['format'=>FDT_FORMAT, 'formatVersion'=>FDT_FORMAT_VERSION, 'application'=>'Agenda', 'applicationBuild'=>'sha256:' . hash('sha256', json_encode($buildParts, JSON_UNESCAPED_SLASHES)), 'schemaVersion'=>fdt_schema_version($pdo), 'createdAt'=>gmdate(DATE_ATOM), 'tables'=>$tableMeta, 'files'=>$files, 'includesSecrets'=>false];
         $json = json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if ($json === false || !$zip->addFromString('manifest.json', $json)) throw new RuntimeException('Manifestul arhivei nu a putut fi creat.');
         if (!$zip->close()) throw new RuntimeException('Arhiva ZIP nu s-a finalizat corect.');
@@ -235,10 +238,11 @@ function fdt_dispatch(string $route, string $method): never {
         $body=fleetos_body(); $token=(string)($body['token']??'');
         if (($body['confirmation']??'')!=='IMPORTAȚI DATELE PESTE BAZA EXISTENTĂ') fdt_fail('Confirmarea explicită nu a fost furnizată. Baza de date nu a fost modificată.',400);
         $record=fdt_consume_staged_token($token,'import'); $path=$dir.DIRECTORY_SEPARATOR.basename((string)($record['archive']??'')); if (!is_file($path)) fdt_fail('Arhiva temporară de import nu mai există.',410);
-        $preview=fdt_inspect_archive($path,$pdo); $before=fdt_build_archive($pdo);
+        try { $preview=fdt_inspect_archive($path,$pdo); $before=fdt_build_archive($pdo); }
+        catch(Throwable $e) { @unlink($path); throw $e; }
         $zip=new ZipArchive(); if ($zip->open($path,ZipArchive::RDONLY)!==true) { @unlink($before); fdt_fail('Arhiva nu a putut fi redeschisă după validare.',422); }
         try { $pdo->beginTransaction(); $counts=fdt_insert_archive($pdo,$zip,$preview['manifest']); $pdo->commit(); }
-        catch(Throwable $e) { if($pdo->inTransaction())$pdo->rollBack(); $zip->close(); throw new FdtHttpException('Importul a fost anulat și tranzacția a fost readusă la starea inițială. Backup-ul anterior a fost păstrat privat pe server: ' . basename($before) . '. Corectați cauza și încercați din nou.',500); }
+        catch(Throwable $e) { if($pdo->inTransaction())$pdo->rollBack(); $zip->close(); @unlink($path); throw new FdtHttpException('Importul a fost anulat și tranzacția a fost readusă la starea inițială. Baza țintă a rămas intactă. Corectați cauza și încărcați din nou arhiva.',500); }
         $zip->close(); @unlink($path); @unlink(fdt_token_path($token));
         $backupToken=fdt_create_token(['kind'=>'export','archive'=>basename($before),'user'=>(string)$_SESSION['fleetos_user'],'expiresAt'=>time()+FDT_EXPORT_TTL]);
         fleetos_json(['ok'=>true,'counts'=>$counts,'filesRestored'=>$counts['fleetos_documents']??0,'backupDownloadUrl'=>'/api/data-transfer/download?token='.$backupToken,'message'=>'Import finalizat. Baza a fost înlocuită după confirmare, iar backupul anterior este disponibil prin link temporar.']);
