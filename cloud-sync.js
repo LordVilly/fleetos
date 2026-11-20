@@ -408,6 +408,8 @@
       if (comparableCloudState(local) === comparableCloudState(remote.state)) {
         context.applyRemote(remote.state, remoteRevision);
         clearLocalChanges();
+        // Also finish pending document uploads and evict already-synced originals on clean startup.
+        await uploadPendingDocuments();
         paused = false;
         setStatus('Sincronizat cu serverul', true);
         if (localRevision !== remoteRevision) context.notify('Modificările serverului au fost preluate automat pe acest dispozitiv.');
