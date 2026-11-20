@@ -8,7 +8,7 @@ function maintenanceIsWorkday(date){return date.getDay()!==0&&date.getDay()!==6}
 function maintenanceNextWorkday(date){let d=new Date(date);while(!maintenanceIsWorkday(d))d=maintenanceAddDays(d,1);return d}
 function maintenancePreviousWorkday(date){let d=new Date(date);while(!maintenanceIsWorkday(d))d=maintenanceAddDays(d,-1);return d}
 function maintenanceCounter(v,unit){let n=Number(v.meters?.[unit]??(v.unit===unit?v.usage:0));return Number.isFinite(n)?n:0}
-function maintenanceHasReference(p){if(!p||p.requiresBaseline===true)return false;if(p.criterion==='date')return Boolean(p.lastDate&&maintenanceParseDate(p.lastDate));if(!['km','ore'].includes(p.criterion))return false;return p.last!==undefined&&p.last!==null&&p.last!==''&&Number.isFinite(Number(p.last))&&Number(p.last)>=0}
+function maintenanceHasReference(p){if(!p||p.requiresBaseline===true||p.baselineVerified!==true)return false;if(p.criterion==='date')return Boolean(p.lastDate&&maintenanceParseDate(p.lastDate));if(!['km','ore'].includes(p.criterion))return false;return p.baselineVerified===true&&p.last!==undefined&&p.last!==null&&p.last!==''&&Number.isFinite(Number(p.last))&&Number(p.last)>=0}
 function maintenanceVehicleHasNoReference(v){let parts=(db.parts||[]).filter(p=>p.vehicleId===v.id);return !parts.some(maintenanceHasReference)}
 function maintenanceNoReferenceVehicleCount(){return (db.vehicles||[]).filter(v=>!v.retiredAt&&maintenanceVehicleHasNoReference(v)).length}
 function maintenancePeriodEnd(start,period){let end=period==='7d'?maintenanceAddDays(start,6):period==='1m'?maintenanceAddDays(maintenanceAddMonths(start,1),-1):maintenanceAddDays(maintenanceAddMonths(start,6),-1);return end}
@@ -28,7 +28,7 @@ function maintenanceBuildPlan(config){
   if(noInterval.length)baseline.push({vehicle:v,items:noInterval,reason:'Intervalul de mentenanță nu este configurat sau confirmat.'});
   for(const p of eligible){
    const unit=p.criterion==='date'?'zile':p.criterion;
-   const hasLast=p.criterion==='date'?Boolean(p.lastDate&&maintenanceParseDate(p.lastDate)):p.last!==undefined&&p.last!==null&&p.last!=='';
+   const hasLast=p.baselineVerified===true&&(p.criterion==='date'?Boolean(p.lastDate&&maintenanceParseDate(p.lastDate)):p.last!==undefined&&p.last!==null&&p.last!=='');
    if(p.requiresBaseline===true||!hasLast){
     baseline.push({vehicle:v,items:[p],reason:'Istoric necunoscut · verificare inițială și stabilirea referinței.'});continue
    }
