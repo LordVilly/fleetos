@@ -221,14 +221,22 @@
     const documents = await getLocalDocuments();
     const referenced = new Set((context.getState().vehicles || []).flatMap(vehicle => (vehicle.documents || []).map(item => item.id)));
     for (const document of documents) {
-      if (!document?.blob || document.cloudSyncedAt || !referenced.has(document.id)) continue;
-      const params = new URLSearchParams({ id: document.id, vehicleId: document.vehicleId, name: document.name || 'document' });
-      const response = await request(`/api/documents?${params}`, { method: 'POST', headers: { 'Content-Type': document.type || 'application/octet-stream' }, body: document.blob });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || `Documentul ${document.name || document.id} nu s-a sincronizat.`);
-      document.cloudSyncedAt = new Date().toISOString();
-      document.sha256 = data.sha256;
-      await putLocalDocument(document);
+      if (!document || !referenced.has(document.id)) continue;
+      if (!document.cloudSyncedAt) {
+        if (!document.blob) continue;
+        const params = new URLSearchParams({ id: document.id, vehicleId: document.vehicleId, name: document.name || 'document' });
+        const response = await request(`/api/documents?${params}`, { method: 'POST', headers: { 'Content-Type': document.type || 'application/octet-stream' }, body: document.blob });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || `Documentul ${document.name || document.id} nu s-a sincronizat.`);
+        document.cloudSyncedAt = new Date().toISOString();
+        document.sha256 = data.sha256;
+      }
+      // Remove the original from IndexedDB only after the server has confirmed it.
+      if (document.cloudSyncedAt && document.blob) {
+        delete document.blob;
+        document.localEvictedAt = new Date().toISOString();
+        await putLocalDocument(document);
+      }
     }
   }
   async function saveLocalBackupSnapshot(state, source = 'local') {
