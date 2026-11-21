@@ -18,7 +18,7 @@ jobs:
     steps:
       - name: Request cPanel to pull this commit over FTPS
         env:
-          FTP_HOST: ftp.lordvilly.ro
+          FTP_HOST: cp118.web365.ro
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
           DEPLOY_SHA: ${{ github.sha }}
