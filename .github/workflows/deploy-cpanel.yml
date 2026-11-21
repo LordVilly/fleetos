@@ -1,0 +1,57 @@
+name: Deploy Agenda to cPanel
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: agenda-cpanel-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Publish to cPanel
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Request cPanel to pull this commit over FTPS
+        env:
+          FTP_HOST: ftp.lordvilly.ro
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$FTP_USERNAME" || { echo "GitHub secret FTP_USERNAME is missing"; exit 1; }
+          test -n "$FTP_PASSWORD" || { echo "GitHub secret FTP_PASSWORD is missing"; exit 1; }
+
+          printf '%s\n' "$DEPLOY_SHA" > request.txt
+          curl --fail --silent --show-error --ssl-reqd --ftp-pasv \
+            --connect-timeout 20 --max-time 60 \
+            --user "$FTP_USERNAME:$FTP_PASSWORD" \
+            --upload-file request.txt "ftp://$FTP_HOST/request"
+
+          echo "Cererea a ajuns în cPanel. Aștept git pull și confirmarea serverului."
+          for attempt in $(seq 1 120); do
+            if curl --fail --silent --show-error --ssl-reqd --ftp-pasv \
+              --connect-timeout 20 --max-time 30 \
+              --user "$FTP_USERNAME:$FTP_PASSWORD" \
+              --output status.txt "ftp://$FTP_HOST/status"; then
+              if grep -Fq "$DEPLOY_SHA OK " status.txt; then
+                echo "Deployment confirmat de cPanel: $(cat status.txt)"
+                exit 0
+              fi
+              if grep -Fq "$DEPLOY_SHA ERROR " status.txt; then
+                echo "cPanel a raportat o eroare:"
+                cat status.txt
+                exit 1
+              fi
+            fi
+            sleep 2
+          done
+
+          echo "cPanel nu a confirmat deploymentul în 4 minute."
+          if test -f status.txt; then cat status.txt; fi
+          exit 1
