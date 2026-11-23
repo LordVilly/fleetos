@@ -75,9 +75,13 @@
   }
   function mergeSyncedRecord(localRecord, serverRecord) {
     const localTime = recordEditTime(localRecord), serverTime = recordEditTime(serverRecord);
-    if (localTime !== serverTime) return localTime > serverTime ? localRecord : serverRecord;
-    if (!localTime) return serverRecord; // Legacy conflicts have no timestamps; keep the central copy as the safe baseline.
-    return mergeRecordPreferLocal(localRecord, serverRecord);
+    // Resolve conflicting scalar values by the newest record timestamp. When
+    // timestamps are absent/equal, the active device is the deterministic
+    // tie-breaker. In every case union fields and ID-keyed child records so a
+    // winner does not erase unrelated edits made by the other device.
+    const preferred = localTime >= serverTime ? localRecord : serverRecord;
+    const other = preferred === localRecord ? serverRecord : localRecord;
+    return mergeRecordPreferLocal(preferred, other);
   }
   function mergeSettingsByTimestamp(localSettings, serverSettings) {
     const localTime = recordEditTime(localSettings), serverTime = recordEditTime(serverSettings);
@@ -101,8 +105,6 @@
       return merged;
     }
     if (localValue && serverValue && typeof localValue === 'object' && typeof serverValue === 'object') {
-      const localTime = recordEditTime(localValue), serverTime = recordEditTime(serverValue);
-      if (localTime || serverTime) return localTime > serverTime ? localValue : serverValue;
       const merged = { ...serverValue, ...localValue };
       for (const key of Object.keys(serverValue)) {
         if (!Object.prototype.hasOwnProperty.call(localValue, key)) continue;
@@ -565,7 +567,11 @@
       if (Number(remote.revision || 0) !== localRevision || hasLocalChanges()) {
         setStatus(hasLocalChanges() ? 'Se reia sincronizarea automată a modificărilor locale…' : 'Se preiau automat modificările de pe server…');
         await bootstrap();
+        return;
       }
+      // A state write can succeed while a document upload temporarily fails.
+      // Retry pending binaries even when the state revision is already current.
+      await uploadPendingDocuments();
     } catch (error) { setStatus('Verificarea serverului a eșuat'); context.notify(error.message); }
   }
   async function downloadDocument(id) {

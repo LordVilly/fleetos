@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const root = path.resolve(__dirname, '..');
 const api = fs.readFileSync(path.join(root, 'api', 'index.php'), 'utf8');
@@ -35,7 +36,38 @@ test('vehicle GPT UI has follow-up turns, report review, explicit save and retri
   assert.match(html, /Salvează în istoricul vehiculului/);
   assert.match(html, /gptReport:vehicleGptReportText\(id\)/);
   assert.match(html, /downloadSavedGptReport/);
+  assert.match(html, /vehicleId:id,type:'Raport diagnostic GPT'/);
+  assert.match(html, /gptSources:r\.sources\|\|\[\]/);
   assert.match(html, /Nu transforma ipotezele|Raportul nu marchează automat/);
+});
+
+test('GPT context and saved manuals/reports are scoped to the selected vehicle and use web citations', () => {
+  assert.ok(api.includes("(string)($item['vehicleId']??'')===$vehicleId"), 'related history and maintenance entries must match the selected vehicle ID');
+  assert.match(api, /document_id = \? AND vehicle_id = \?/);
+  assert.match(api, /'type'=>'web_search'/);
+  assert.match(api, /url_citation/);
+  assert.match(api, /array_slice\(\$prior,-20\)/);
+  assert.match(html, /v\.documents\.push\(doc\)/);
+  assert.match(html, /vehicleGptReportText\(id\)/);
+  assert.match(html, /gptReport:vehicleGptReportText\(id\)/);
+});
+
+test('legacy GPT history migration adds a summary without deleting or rewriting the original exchange', () => {
+  const start = html.indexOf('function compactGptSummary(');
+  const end = html.indexOf('function applyVerifiedGptCustomFields(', start);
+  assert.ok(start >= 0 && end > start, 'GPT history migration must remain identifiable');
+  const originalQuestion = 'Simptom repetat la sistemul hidraulic';
+  const originalAnswer = 'Răspuns diagnostic detaliat '.repeat(80);
+  const originalDescription = 'Investigație GPT pentru excavator';
+  const db = { history: [{ id: 'gpt-legacy', gptQuestion: originalQuestion, gptAnswer: originalAnswer, description: originalDescription }] };
+  let saves = 0;
+  vm.runInNewContext(html.slice(start, end), { db, save() { saves++; } });
+
+  assert.equal(db.history[0].gptQuestion, originalQuestion);
+  assert.equal(db.history[0].gptAnswer, originalAnswer);
+  assert.equal(db.history[0].description, originalDescription);
+  assert.ok(db.history[0].gptSummary.length <= 600);
+  assert.equal(saves, 1);
 });
 
 test('inline application JavaScript parses without executing application state', () => {

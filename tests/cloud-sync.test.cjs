@@ -24,22 +24,25 @@ function response(data, status = 200) {
   };
 }
 
-function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult = true, hasSnapshot = true, role = 'phone', backupFails = false, dirty = false, conflictOnce = false, backupFailsOnce = false }) {
+function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult = true, hasSnapshot = true, role = 'phone', backupFails = false, dirty = false, conflictOnce = false, backupFailsOnce = false, documentUploadFailsOnce = false, localDocuments = [] }) {
   let local = clone(initialLocal);
   let remoteState = initialRemote.state ? clone(initialRemote.state) : null;
   let remoteRevision = initialRemote.revision || 0;
   let shouldConflictOnce = conflictOnce;
   let shouldFailBackupOnce = backupFailsOnce;
+  let shouldFailDocumentUploadOnce = documentUploadFailsOnce;
   const calls = [];
   const messages = [];
   const timeline = [];
   const backups = [];
   const localBackups = new Map();
+  const localDocumentStore = new Map(localDocuments.map(document => [document.id, { ...document }]));
+  const serverDocuments = new Map();
   let confirmCalls = 0;
 
   async function fakeFetch(url, options = {}) {
     const method = options.method || 'GET';
-    calls.push({ url, method, body: options.body ? JSON.parse(options.body) : null });
+    calls.push({ url, method, body: typeof options.body === 'string' ? JSON.parse(options.body) : null });
     if (url === '/api/state' && method === 'GET') {
       return response({ revision: remoteRevision, state: clone(remoteState) });
     }
@@ -62,6 +65,13 @@ function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult
       return response({ ok: true, backupId: backups.length });
     }
     if (url === '/api/backups' && method === 'GET') return response({ backups: [] });
+    if (url.startsWith('/api/documents?') && method === 'POST') {
+      if (shouldFailDocumentUploadOnce) { shouldFailDocumentUploadOnce = false; return response({ error: 'temporary document upload failure' }, 503); }
+      const parsed = new URL(url, 'https://fleetos.test');
+      const entry = { id: parsed.searchParams.get('id'), vehicleId: parsed.searchParams.get('vehicleId'), name: parsed.searchParams.get('name'), bytes: await options.body.arrayBuffer() };
+      serverDocuments.set(entry.id, entry);
+      return response({ sha256: 'test-sha256' });
+    }
     if (url.startsWith('/api/documents?id=') && method === 'GET') return response({ ok: true });
     throw new Error(`Unexpected request: ${method} ${url}`);
   }
@@ -79,11 +89,11 @@ function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult
               return {
                 getAll() {
                   const result = {};
-                  queueMicrotask(() => { result.result = name === 'agenda-automatic-backups' ? [...localBackups.values()] : []; result.onsuccess?.(); });
+                  queueMicrotask(() => { result.result = name === 'agenda-automatic-backups' ? [...localBackups.values()] : [...localDocumentStore.values()]; result.onsuccess?.(); });
                   return result;
                 },
-                put(record) { localBackups.set(record.id, clone(record)); queueMicrotask(() => tx.oncomplete?.()); },
-                delete(id) { localBackups.delete(id); queueMicrotask(() => tx.oncomplete?.()); }
+                put(record) { (name === 'agenda-automatic-backups' ? localBackups : localDocumentStore).set(record.id, name === 'agenda-automatic-backups' ? clone(record) : record); queueMicrotask(() => tx.oncomplete?.()); },
+                delete(id) { (name === 'agenda-automatic-backups' ? localBackups : localDocumentStore).delete(id); queueMicrotask(() => tx.oncomplete?.()); }
               };
             } };
             return tx;
@@ -156,6 +166,8 @@ function makeHarness({ local: initialLocal, remote: initialRemote, confirmResult
     timeline,
     backups,
     localBackups,
+    localDocumentStore,
+    serverDocuments,
     getLocal: () => local,
     getRemote: () => ({ revision: remoteRevision, state: remoteState }),
     getConfirmCalls: () => confirmCalls,
@@ -347,6 +359,74 @@ test('same-record sync preserves fields that changed on either device', async ()
   assert.equal(vehicle.category, 'Utilaj');
   assert.equal(vehicle.odometer, 1200);
   assert.equal(harness.getConfirmCalls(), 0);
+});
+
+test('timestamp winner keeps non-conflicting fields and child records from both devices', async () => {
+  const local = state([{ id: 'vehicle-1', name: 'Nume local', vin: 'VIN local', _syncUpdatedAt: '2026-11-20T10:00:00Z', documents: [{ id: 'doc-local', name: 'Local manual' }] }], {
+    settings: { cloudSyncEnabled: true, cloudRevision: 3 }
+  });
+  const remote = { revision: 4, state: state([{ id: 'vehicle-1', name: 'Nume server mai nou', category: 'Utilaj', _syncUpdatedAt: '2026-11-20T11:00:00Z', documents: [{ id: 'doc-server', name: 'Manual server' }] }]) };
+  const harness = makeHarness({ local, remote, dirty: true });
+
+  await harness.cloud.bootstrap();
+
+  const vehicle = harness.getRemote().state.vehicles[0];
+  assert.equal(vehicle.name, 'Nume server mai nou');
+  assert.equal(vehicle.vin, 'VIN local');
+  assert.equal(vehicle.category, 'Utilaj');
+  assert.deepEqual(vehicle.documents.map(document => document.id).sort(), ['doc-local', 'doc-server']);
+  assert.equal(harness.backups[0].snapshot.vehicles[0].vin, undefined);
+  assert.equal(harness.backups[1].snapshot.vehicles[0].vin, 'VIN local');
+});
+
+test('sync preserves GPT report, service history, document metadata and uploads the local document before evicting its blob', async () => {
+  const documentBlob = new Blob(['manual bytes'], { type: 'text/plain' });
+  const local = state([{ id: 'vehicle-1', name: 'Excavator', documents: [{ id: 'manual-local', vehicleId: 'vehicle-1', name: 'manual.txt', type: 'text/plain', size: 12 }] }], {
+    history: [
+      { id: 'gpt-report-1', vehicleId: 'vehicle-1', type: 'Investigație GPT', gptQuestion: 'Cod eroare', gptAnswer: 'Răspuns complet păstrat', gptReport: 'Raport tehnic complet', gptSummary: 'Rezumat', gptSources: [{ title: 'Manual OEM', url: 'https://example.test/manual' }] },
+      { id: 'repair-1', vehicleId: 'vehicle-1', type: 'Reparație', description: 'Reparație efectuată', parts: 'Filtru hidraulic × 1' }
+    ], settings: { cloudSyncEnabled: true, cloudRevision: 4 }
+  });
+  const remote = { revision: 4, state: state([{ id: 'vehicle-1', name: 'Excavator' }], {
+    history: [{ id: 'gpt-report-1', vehicleId: 'vehicle-1', type: 'Investigație GPT', gptSources: [{ title: 'Buletin OEM', url: 'https://example.test/bulletin' }] }],
+    settings: { cloudSyncEnabled: true }
+  }) };
+  const harness = makeHarness({ local, remote, dirty: true, localDocuments: [{ id: 'manual-local', vehicleId: 'vehicle-1', name: 'manual.txt', type: 'text/plain', blob: documentBlob }] });
+
+  await harness.cloud.bootstrap();
+
+  const synced = harness.getRemote().state;
+  const report = synced.history.find(entry => entry.id === 'gpt-report-1');
+  assert.equal(report.gptAnswer, 'Răspuns complet păstrat');
+  assert.equal(report.gptQuestion, 'Cod eroare');
+  assert.equal(report.gptReport, 'Raport tehnic complet');
+  assert.deepEqual(report.gptSources.map(source => source.title).sort(), ['Buletin OEM', 'Manual OEM']);
+  assert.equal(synced.history.find(entry => entry.id === 'repair-1').parts, 'Filtru hidraulic × 1');
+  assert.equal(synced.vehicles[0].documents[0].id, 'manual-local');
+  assert.equal(harness.serverDocuments.get('manual-local').vehicleId, 'vehicle-1');
+  assert.equal(new TextDecoder().decode(harness.serverDocuments.get('manual-local').bytes), 'manual bytes');
+  const localFileAfterUpload = harness.localDocumentStore.get('manual-local');
+  assert.ok(localFileAfterUpload.cloudSyncedAt);
+  assert.equal(localFileAfterUpload.blob, undefined);
+});
+
+test('failed document upload remains local and retries automatically without a state revision change', async () => {
+  const documentBlob = new Blob(['retry this file'], { type: 'text/plain' });
+  const local = state([{ id: 'vehicle-1', name: 'Truck nou', documents: [{ id: 'manual-retry', vehicleId: 'vehicle-1', name: 'manual.txt', type: 'text/plain', size: 15 }] }], { settings: { cloudSyncEnabled: true, cloudRevision: 3 } });
+  const remote = state([{ id: 'vehicle-1', name: 'Truck vechi' }], { settings: { cloudSyncEnabled: true } });
+  const harness = makeHarness({ local, remote: { revision: 3, state: remote }, dirty: true, localDocuments: [{ id: 'manual-retry', vehicleId: 'vehicle-1', name: 'manual.txt', type: 'text/plain', blob: documentBlob }], documentUploadFailsOnce: true });
+
+  await harness.cloud.bootstrap();
+  assert.equal(harness.getRemote().revision, 4);
+  assert.equal(harness.localDocumentStore.get('manual-retry').blob, documentBlob);
+  assert.equal(harness.serverDocuments.has('manual-retry'), false);
+
+  await harness.cloud.checkRemoteRevision();
+
+  assert.equal(harness.serverDocuments.has('manual-retry'), true);
+  assert.ok(harness.localDocumentStore.get('manual-retry').cloudSyncedAt);
+  assert.equal(harness.localDocumentStore.get('manual-retry').blob, undefined);
+  assert.equal(harness.getRemote().revision, 4);
 });
 test('same-ID device edits synchronize automatically after backups', async () => {
   const local = state([{ id: 'shared-1', name: 'Corect pe telefon' }], { settings: { cloudSyncEnabled: true, cloudRevision: 12 } });
