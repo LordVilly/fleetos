@@ -1,5 +1,8 @@
 name: Validate FleetOS
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -34,3 +37,49 @@ jobs:
           node --check /tmp/fleetos-inline.js
       - name: Test cloud synchronization decisions
         run: node --test tests/cloud-sync.test.cjs
+
+  deploy-production:
+    name: Deploy to cPanel over FTPS
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: php-and-js-syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: fleetos-production-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Check deployment secrets
+        env:
+          CPANEL_FTP_SERVER: ${{ secrets.CPANEL_FTP_SERVER }}
+          CPANEL_FTP_USERNAME: ${{ secrets.CPANEL_FTP_USERNAME }}
+          CPANEL_FTP_PASSWORD: ${{ secrets.CPANEL_FTP_PASSWORD }}
+        run: |
+          if [ -z "$CPANEL_FTP_SERVER" ] || [ -z "$CPANEL_FTP_USERNAME" ] || [ -z "$CPANEL_FTP_PASSWORD" ]; then
+            echo "::error::Set CPANEL_FTP_SERVER, CPANEL_FTP_USERNAME and CPANEL_FTP_PASSWORD in GitHub Actions secrets."
+            exit 1
+          fi
+
+      - name: Deploy FleetOS to the cPanel document root
+        uses: SamKirkland/FTP-Deploy-Action@110f9186c050f71550953127052e77650219c287
+        with:
+          server: ${{ secrets.CPANEL_FTP_SERVER }}
+          username: ${{ secrets.CPANEL_FTP_USERNAME }}
+          password: ${{ secrets.CPANEL_FTP_PASSWORD }}
+          protocol: ftps
+          port: ${{ vars.CPANEL_FTP_PORT || '21' }}
+          server-dir: ${{ vars.CPANEL_FTP_SERVER_DIR || './' }}
+          security: strict
+          dangerous-clean-slate: false
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/.github/**
+            **/node_modules/**
+            **/tests/**
+            **/.env
+            **/.env.*
+            .env
+            .env.*
+            **/uploads/**
+            **/backups/**
+            FleetOS-cPanel.zip
