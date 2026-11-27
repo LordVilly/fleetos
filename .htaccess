@@ -6,6 +6,11 @@ RewriteEngine On
   Require all denied
 </FilesMatch>
 
+# Fișier intern folosit de GitHub Actions pentru sincronizarea sigură prin FTPS.
+<FilesMatch "^\.ftp-deploy-sync-state\.json$">
+  Require all denied
+</FilesMatch>
+
 <IfModule mod_headers.c>
   Header always set X-Content-Type-Options "nosniff"
   Header always set X-Frame-Options "DENY"
